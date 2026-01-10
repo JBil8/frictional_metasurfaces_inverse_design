@@ -1,0 +1,55 @@
+# --- Python Basics ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# --- Virtual Environments ---
+venv/
+.venv/
+env/
+.env
+
+# --- PyTorch & Models ---
+# Ignore large weight files and checkpoints
+*.pth
+*.pt
+*.ckpt
+
+# --- Project Specific Data ---
+# Ignore the generated dataset (since you can regenerate it)
+data/*.pt
+# Ignore the output folder for plots if you create one
+validation_plots/
+
+# --- MLflow ---
+# MLflow creates thousands of small files for logging. 
+# Do NOT commit this folder.
+mlruns/
+.trash/
+
+# --- OS & IDEs ---
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# --- Explicit Ignore of your output artifacts ---
+trained_surface_model.pth
+model_final.pth
