@@ -84,15 +84,15 @@ class SurfaceDataGenerator:
 
         # --- 5. Data Packaging ---
         # Input to NN: The curves
-        # Shape: (N, 2, Steps) -> Channel 0: Load, Channel 1: Area
-        # We stack them so the NN sees the correlation
-        curves = torch.stack([total_load, total_area], dim=1)
+        # Stiffness = d(Load) / d(Indentation Step)
+        # We use torch.diff to calculate difference between steps.
+        # We prepend a zero to keep the sequence length the same (n_steps).
+        stiffness = torch.diff(total_load, dim=1, prepend=torch.zeros(n_samples, 1))
         
-        # Targets for NN: The parameters
-        # We need to decide what to predict. 
-        # Usually: Exponents and Height *Differences* (except the first which is 0)
-        # But predicting absolute sorted offsets is also fine.
-        # Let's keep it simple: Predict Exponents and Sorted Offsets
+        # --- 5. Data Packaging ---
+        # Input to NN: Now 3 Channels [Load, Area, Stiffness]
+        curves = torch.stack([total_load, total_area, stiffness], dim=1)
+        
         params = torch.cat([exponents_t, offsets_t], dim=1)
         
         print(f"Dataset Generated. Curves: {curves.shape}, Params: {params.shape}")

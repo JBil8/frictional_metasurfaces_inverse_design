@@ -76,7 +76,7 @@ def main():
         
         for epoch in range(epochs):
             model.train()
-            epoch_loss = 0
+            epoch_loss = 0.0  # Reset metric
             
             # Dynamic Reg Decay
             progress = epoch / (epochs * 0.5)
@@ -86,7 +86,7 @@ def main():
             for bx, by in train_loader:
                 bx, by = bx.to(device), by.to(device)
                 
-                optimizer.zero_grad()
+                optimizer.zero_grad()  # 1. Clear gradients
                 
                 # Predict Parameters
                 p_n, p_h = model(bx)
@@ -97,32 +97,50 @@ def main():
                 
                 rec_l, rec_a = physics(p_h, p_n, p_w, batch_ind)
                 
-                # Normalize reconstruction to match input scale
+                # Normalize reconstruction
                 rec_l = rec_l / max_load
                 rec_a = rec_a / max_area
                 
-                # Losses
-                loss_phys = nn.MSELoss()(rec_l, bx[:, 0, :]) + nn.MSELoss()(rec_a, bx[:, 1, :])
+                # --- LOSS CALCULATION ---
+                # 1. Logarithmic Loss (Fixes the magnitude bias)
+                loss_log_load = nn.MSELoss()(torch.log1p(rec_l), torch.log1p(bx[:, 0, :]))
+                loss_log_area = nn.MSELoss()(torch.log1p(rec_a), torch.log1p(bx[:, 1, :]))
+                
+                # 2. Slope Loss (Fixes the shape/exponents)
+                target_slope = bx[:, 0, 1:] - bx[:, 0, :-1] 
+                recon_slope  = rec_l[:, 1:] - rec_l[:, :-1]
+                loss_slope = nn.MSELoss()(recon_slope, target_slope)
+
+                # 3. Combine Physics Losses
+                loss_phys = (loss_log_load + loss_log_area) * 10.0 + (loss_slope * 100.0)
+
+                # 4. Parameter Regularization
                 loss_param = nn.MSELoss()(p_n, by[:, :cfg['physics']['n_asperities']]) + \
                              nn.MSELoss()(p_h, by[:, cfg['physics']['n_asperities']:])
-                
+
                 total_loss = loss_phys + (lambda_reg * loss_param)
                 
-                total_loss.backward()
-                optimizer.step()
-                epoch_loss += total_loss.item()
+                # 
+                total_loss.backward()  # 2. Calculate gradients
+                optimizer.step()       # 3. Update weights
+                
+                epoch_loss += total_loss.item() # Accumulate for logging
+
+            # Log Avg Train Loss
+            avg_loss = epoch_loss / len(train_loader)
+            mlflow.log_metric("train_loss", avg_loss, step=epoch)
 
             # Log Avg Train Loss
             avg_loss = epoch_loss / len(train_loader)
             mlflow.log_metric("train_loss", avg_loss, step=epoch)
             
-            # Validation & Visualization (Every 10 epochs)
             if epoch % 10 == 0:
                 model.eval()
                 with torch.no_grad():
                     # Get one random sample from val set
-                    vx, vy = next(iter(val_loader)) # Batch size is 1
+                    vx, vy = next(iter(val_loader)) 
                     vx = vx.to(device)
+                    vy = vy.to(device) # We need the GT params now!
                     
                     vn, vh = model(vx)
                     
@@ -130,16 +148,19 @@ def main():
                     vw = torch.ones_like(vn) * 2.0 * cfg['physics']['radius']
                     rec_l, rec_a = physics(vh, vn, vw, indentations)
                     
-                    # Un-normalize for plotting (Show real units)
-                    # Input (Target)
+                    # Un-normalize curves
                     t_l = (vx[0, 0, :] * max_load).cpu().numpy()
                     t_a = (vx[0, 1, :] * max_area).cpu().numpy()
-                    # Output (Pred)
                     p_l = rec_l[0].cpu().numpy()
                     p_a = rec_a[0].cpu().numpy()
                     
-                    # Plot and Log to MLflow
-                    fig = plot_reconstruction(t_l, t_a, p_l, p_a, epoch)
+                    # Prepare Parameters for plotting
+                    # Concatenate predicted n and h to match GT shape
+                    p_params = torch.cat([vn, vh], dim=1)[0].cpu().numpy()
+                    t_params = vy[0].cpu().numpy()
+                    
+                    # --- NEW PLOTTING CALL ---
+                    fig = plot_reconstruction(t_l, t_a, p_l, p_a, t_params, p_params, epoch)
                     mlflow.log_figure(fig, f"validation_plots/epoch_{epoch}.png")
                     plt.close(fig)
                     
