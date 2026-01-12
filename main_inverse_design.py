@@ -115,8 +115,9 @@ def main():
                 loss_phys = (loss_log_load + loss_log_area) * 10.0 + (loss_slope * 100.0)
 
                 # 4. Parameter Regularization
-                loss_param = nn.MSELoss()(p_n, by[:, :cfg['physics']['n_asperities']]) + \
-                             nn.MSELoss()(p_h, by[:, cfg['physics']['n_asperities']:])
+                n_asperities = cfg['physics']['n_asperities']
+                loss_param = nn.MSELoss()(p_n, by[:, :n_asperities]) + \
+                             nn.MSELoss()(p_h, by[:, n_asperities:])
 
                 total_loss = loss_phys + (lambda_reg * loss_param)
                 
@@ -197,8 +198,9 @@ def main():
                 l_phys = nn.MSELoss()(rl, tx[:, 0, :]) + nn.MSELoss()(ra, tx[:, 1, :])
                 test_loss_curve += l_phys.item()
                 
+                
                 # Error on Params (MSE)
-                l_param = nn.MSELoss()(pn, ty[:, :16]) + nn.MSELoss()(ph, ty[:, 16:])
+                l_param = nn.MSELoss()(pn, ty[:, :n_asperities]) + nn.MSELoss()(ph, ty[:, n_asperities:])
                 test_loss_params += l_param.item()
 
         avg_test_curve_err = test_loss_curve / len(test_loader)
