@@ -27,7 +27,6 @@ class SurfaceInverseModel(nn.Module):
         )
         
         # --- Dynamic Size Calculation ---
-        # FIX: Must match input channels (3)
         dummy_input = torch.zeros(1, 3, self.n_steps)
         
         with torch.no_grad():

@@ -33,12 +33,15 @@ def main():
         # Normalization (Crucial for stability)
         max_load = X[:, 0, :].max()
         max_area = X[:, 1, :].max()
+        max_stiff = X[:, 2, :].max() 
         X[:, 0, :] /= max_load
         X[:, 1, :] /= max_area
+        X[:, 2, :] /= max_stiff
         
         # Log normalization factors (needed for inference later!)
         mlflow.log_metric("norm_max_load", float(max_load))
         mlflow.log_metric("norm_max_area", float(max_area))
+        mlflow.log_metric("norm_max_stiff", float(max_stiff))
 
         dataset = TensorDataset(X, Y)
         total_len = len(dataset)
@@ -116,8 +119,8 @@ def main():
 
                 # 4. Parameter Regularization
                 n_asperities = cfg['physics']['n_asperities']
-                loss_param = nn.MSELoss()(p_n, by[:, :n_asperities]) + \
-                             nn.MSELoss()(p_h, by[:, n_asperities:])
+                loss_param = 5.0 * nn.MSELoss()(p_n, by[:, :n_asperities]) + \
+                             1.0 * nn.MSELoss()(p_h, by[:, n_asperities:])
 
                 total_loss = loss_phys + (lambda_reg * loss_param)
                 
