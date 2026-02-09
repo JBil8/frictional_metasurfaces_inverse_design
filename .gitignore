@@ -53,3 +53,7 @@ mlruns/
 # --- Explicit Ignore of your output artifacts ---
 trained_surface_model.pth
 model_final.pth
+
+*.png
+*.npz
+*.db

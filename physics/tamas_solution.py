@@ -1,5 +1,6 @@
 import numpy as np
 import math
+from mpi4py import MPI
 
 # Try-except block allows the code to be imported even if tamaas isn't installed
 try:

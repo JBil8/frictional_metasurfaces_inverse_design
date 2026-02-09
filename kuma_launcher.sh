@@ -14,14 +14,14 @@
 
 # --- Environment Setup ---
 module purge
-module load gcc                 # Load compiler
-module load cuda         # Load CUDA
+moudle load nvhpc/24.7-mpi   # Load NVIDIA HPC SDK
+module load cuda/12.5.1         # Load CUDA
 
 # Activate your virtual environment
-source ~/.venv/bin/activate
+source .venv/bin/activate
 
 # 1. Generate Data (Only if it doesn't exist yet)
-echo "Generating 500k samples..."
+echo "Generating samples..."
 python -m data.surface_generator
 
 # 2. Train Model

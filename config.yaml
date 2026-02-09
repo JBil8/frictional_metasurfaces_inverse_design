@@ -8,14 +8,14 @@ physics:
 
 data:
   path: "data/dataset_16_asp.pt"
-  n_steps: 200
-  n_samples: 20000
+  n_steps: 500
+  n_samples: 500000
 
 model:
   hidden_dim: 256
 
 training:
-  batch_size: 64
-  epochs: 200
+  batch_size: 4096
+  epochs: 50
   learning_rate: 0.001
-  device: "cpu" #"cuda"
+  device: "cuda"

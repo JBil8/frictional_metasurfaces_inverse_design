@@ -4,6 +4,13 @@ import matplotlib.pyplot as plt
 import sys
 import os
 
+# Set threads BEFORE imports
+os.environ["OMP_NUM_THREADS"] = "4"
+os.environ["MKL_NUM_THREADS"] = "4"
+os.environ["OPENBLAS_NUM_THREADS"] = "4"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "4"
+os.environ["NUMEXPR_NUM_THREADS"] = "4"
+
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 from utils.config import load_config
 from ml_models.model_mlp import SurfaceInverseModel
@@ -14,123 +21,111 @@ def main():
     cfg = load_config("config.yaml")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # 1. Load the SAME dataset used for training
     print(f"Loading data from {cfg['data']['path']}...")
     data = torch.load(cfg['data']['path'])
-    X_all = data["x"]  # Raw Data (N, 3, Steps)
-    Y_all = data["y"]  # Raw Params (N, Params)
+    X_all = data["x"]
+    Y_all = data["y"]
 
-    # 2. Calculate GLOBAL Normalization Constants (Exactly like Main)
-    # This ensures 100% consistency with how the model learned.
+    # Global Normalization
     GLOBAL_MAX_LOAD = X_all[:, 0, :].max()
     GLOBAL_MAX_AREA = X_all[:, 1, :].max()
     GLOBAL_MAX_STIFF = X_all[:, 2, :].max()
     
-    print(f"Global Max Load: {GLOBAL_MAX_LOAD:.4f}")
-    print(f"Global Max Stiff: {GLOBAL_MAX_STIFF:.4f}")
-
-    # 3. Pick a Test Sample
-    # We pick the last sample (-1) to simulate "unseen" data
-    sample_idx = -1 
+    # --- 1. Define Samples to Validate ---
+    test_indices = [0, len(X_all) // 2, -1] # First, Middle, Last
     
-    # Get Raw Curves (for plotting/physics) and Raw Params
-    raw_x = X_all[sample_idx].to(device) # (3, Steps)
-    gt_params = Y_all[sample_idx].to(device) # (32,)
+    # Dictionary to store all results for saving
+    saved_results = {}
 
-    # Extract GT parameters
-    n_asp = cfg['physics']['n_asperities']
-    gt_n = gt_params[:n_asp].cpu().numpy()
-    gt_h = gt_params[n_asp:].cpu().numpy()
-    
-    # We need the load curve for Tamaas input (Steps)
-    # Channel 0 is Load
-    target_loads = raw_x[0].cpu().numpy()
-
-    # 4. Prepare Input for NN (Normalize using GLOBAL constants)
-    # We must reshape to (1, 3, Steps) for the model
-    nn_input = raw_x.clone().unsqueeze(0) 
-    nn_input[:, 0, :] /= GLOBAL_MAX_LOAD
-    nn_input[:, 1, :] /= GLOBAL_MAX_AREA
-    nn_input[:, 2, :] /= GLOBAL_MAX_STIFF
-
-    # 5. Run Prediction
-    print("Running Neural Network Prediction...")
     model = SurfaceInverseModel(cfg).to(device)
     model.load_state_dict(torch.load("model_final.pth", map_location=device))
     model.eval()
-    
-    with torch.no_grad():
-        pred_n_t, pred_h_t = model(nn_input)
-    
-    pred_n = pred_n_t.cpu().numpy()[0]
-    pred_h = pred_h_t.cpu().numpy()[0]
 
-    # 6. Run Tamaas BEM Validation
-    print("\nRunning TAMAAS BEM Simulation...")
-    try:
-        max_indent_phys = cfg['physics']['max_delta_ratio'] * cfg['physics']['radius']
-        
-        # We assume Widths are fixed/known (from config logic)
-        R = cfg['physics']['radius']
-        gt_w = np.ones_like(gt_n) * (2.0 * R)
-
-        bem_areas, bem_surface, bem_L = run_tamas_simulation(
-            heights=pred_h, 
-            ns=pred_n, 
-            widths=gt_w, 
-            target_loads=target_loads[::10],
-            max_indentation=max_indent_phys,
-            E_star=cfg['physics']['E_star']
-        )
-        bem_success = True
-    except Exception as e:
-        print(f"Tamaas Error: {e}")
-        bem_success = False
-        bem_areas = None
-
-    # 7. Plotting
-    print("Plotting results...")
-    fig = plt.figure(figsize=(16, 7))
-    
-    # Subplot 1: Curves
-    ax1 = fig.add_subplot(1, 2, 1)
-    
-    # Plot Raw GT Area (Channel 1)
-    gt_area_curve = raw_x[1].cpu().numpy()
-    ax1.plot(target_loads, gt_area_curve, 'k-', linewidth=2.5, label='Target (Data GT)')
-    
-    # Plot NN Prediction (Analytical check)
+    # Create analytical engine for comparison
     phys_engine = AxisymmetricContactLayer(E_star=cfg['physics']['E_star']).to(device)
-    indentations = torch.linspace(0, max_indent_phys, cfg['data']['n_steps']).unsqueeze(0).to(device)
-    with torch.no_grad():
-        # Reconstruct using predicted parameters
-        _, pred_area_analytical = phys_engine(pred_h_t, pred_n_t, torch.tensor(gt_w).unsqueeze(0).to(device), indentations)
-    ax1.plot(target_loads, pred_area_analytical.cpu().numpy()[0], 'b--', linewidth=2, label='NN Prediction (Analytical)')
-    
-    if bem_success:
-        ax1.plot(target_loads[::10], bem_areas, 'r.', markersize=8, label='BEM Verification')
 
-    ax1.set_xlabel("Load")
-    ax1.set_ylabel("Area")
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
-    
-    # Subplot 2: 3D Surface
-    if bem_success and bem_surface is not None:
-        ax2 = fig.add_subplot(1, 2, 2, projection='3d')
-        N = bem_surface.shape[0]
-        x = np.linspace(0, bem_L, N)
-        y = np.linspace(0, bem_L, N)
-        X, Y = np.meshgrid(x, y)
-        # clip bem_surface for better visualization
-        bem_surface = np.clip(bem_surface, -1.0, 0.0)
-        surf = ax2.plot_surface(X, Y, bem_surface, cmap='coolwarm', linewidth=0, antialiased=False)
-        fig.colorbar(surf, ax=ax2, shrink=0.5)
-        ax2.set_title(f"Predicted Surface (L={bem_L:.2f})")
+    for idx in test_indices:
+        real_idx = idx if idx >= 0 else len(X_all) + idx
+        print(f"\n=== Validating Sample Index {real_idx} ===")
 
-    plt.tight_layout()
-    plt.savefig("validation_bem_fixed.png")
-    plt.show()
+        # A. Prepare Data
+        raw_x = X_all[idx].to(device)
+        gt_params = Y_all[idx].to(device)
+        
+        target_loads = raw_x[0].cpu().numpy()
+        target_areas = raw_x[1].cpu().numpy() # For saving
+
+        # B. NN Prediction
+        nn_input = raw_x.clone().unsqueeze(0)
+        nn_input[:, 0, :] /= GLOBAL_MAX_LOAD
+        nn_input[:, 1, :] /= GLOBAL_MAX_AREA
+        nn_input[:, 2, :] /= GLOBAL_MAX_STIFF
+        
+        with torch.no_grad():
+            pred_n_t, pred_h_t = model(nn_input)
+            
+            # Analytical NN Check
+            max_indent = cfg['physics']['max_delta_ratio'] * cfg['physics']['radius']
+            indents = torch.linspace(0, max_indent, cfg['data']['n_steps']).unsqueeze(0).to(device)
+            # Assume constant widths for now (as per your training logic)
+            w_t = torch.ones_like(pred_n_t) * (2.0 * cfg['physics']['radius'])
+            _, pred_area_analytical = phys_engine(pred_h_t, pred_n_t, w_t, indents)
+        
+        pred_n = pred_n_t.cpu().numpy()[0]
+        pred_h = pred_h_t.cpu().numpy()[0]
+        
+        # C. Tamaas Simulation
+        print("  > Running Tamaas...")
+        try:
+            # Downsample loads for Tamaas (speedup)
+            tamaas_load_steps = target_loads[::20] 
+            
+            bem_areas, bem_surface, bem_L = run_tamas_simulation(
+                heights=pred_h, 
+                ns=pred_n, 
+                widths=np.ones_like(pred_n) * (2.0 * cfg['physics']['radius']), 
+                target_loads=tamaas_load_steps,
+                max_indentation=max_indent,
+                E_star=cfg['physics']['E_star']
+            )
+            
+            # Estimate pixel size
+            N_pixels = bem_surface.shape[0]
+            pixel_size = bem_L / N_pixels
+            
+            # Estimate Hertzian radius at lowest non-zero load for the sharpest asperity (n approx 2)
+            min_load = tamaas_load_steps[1] # Skip 0
+            # a approx (3FL/4E)^(1/3) for sphere. 
+            # This is a rough heuristic to check safety.
+            est_min_radius = (0.75 * min_load * cfg['physics']['radius'] / cfg['physics']['E_star'])**(1/3)
+            
+            ppc = est_min_radius / pixel_size
+            print(f"  > GRID QUALITY: {ppc:.1f} pixels per contact radius (at min load).")
+            if ppc < 5.0:
+                print("    [WARNING] Resolution might be too low for initial contact!")
+            else:
+                print("    [OK] Resolution is sufficient.")
+
+        except Exception as e:
+            print(f"  > Tamaas Failed: {e}")
+            bem_areas = None
+            tamaas_load_steps = None
+
+        # D. Store Data for Plotting Later
+        saved_results[f"sample_{real_idx}"] = {
+            "load_gt": target_loads,
+            "area_gt": target_areas,
+            "area_nn_analytical": pred_area_analytical.cpu().numpy()[0],
+            "load_bem": tamaas_load_steps,
+            "area_bem": bem_areas,
+            "params_pred_n": pred_n,
+            "params_pred_h": pred_h
+        }
+
+    # --- 4. Save to Disk ---
+    # This creates one file you can load on your laptop to make perfect plots
+    np.savez("./data/paper_validation_data.npz", **saved_results)
+    print("\nAll validation data saved to 'paper_validation_data.npz'")
 
 if __name__ == "__main__":
     main()

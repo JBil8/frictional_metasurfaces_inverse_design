@@ -146,7 +146,7 @@ def main():
     plt.legend()
     plt.grid(True, alpha=0.3)
     
-    save_path = "nn_vs_hertz_powerlaw.png"
+    save_path = "./plots/nn_vs_hertz_cone.png"
     plt.savefig(save_path)
     print(f"Saved plot to {save_path}")
     plt.show()
