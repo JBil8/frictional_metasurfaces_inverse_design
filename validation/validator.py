@@ -3,8 +3,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import sys
 import os
+from torch.utils.data import TensorDataset, random_split
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(current_dir, '..'))
+
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 try:
     from validation.targets import TargetGenerator
@@ -39,61 +44,95 @@ class UnifiedValidator:
         
         self.gen = TargetGenerator(self.phys, self.cfg, self.device)
 
-    def validate_sample(self, category="switch", offset=5):
+    def get_test_set_indices_by_category(self):
         """
-        Validates on a real sample using EXACT INDICES.
-        Requires dataset_16_asp_mixed.pt to be generated correctly.
+        Reconstructs the Random Split and maps Test Indices back to Categories.
+        Returns a dict: {'switch': [idx1, idx2...], 'wall': [...], ...}
         """
-        # DIRECT FETCH: No scanning. We trust the generator.
-        t_l, t_a, gt_n, gt_h, title = self.gen.get_dataset_sample(category, offset)
+        print("[Validator] Reconstructing Test Split to find unseen samples...")
         
-        # NN Prediction
-        prepend_val = torch.zeros(1, 1).to(self.device)
-        raw_stiff = torch.diff(t_l, dim=1, prepend=prepend_val)
+        total_len = self.gen.total_samples
+        train_len = int(0.8 * total_len)
+        val_len = int(0.1 * total_len)
+        test_len = total_len - train_len - val_len
         
-        nn_input = torch.cat([
-            t_l / self.MAX_L, 
-            t_a / self.MAX_A, 
-            raw_stiff / self.MAX_S
-        ], dim=0).unsqueeze(0)
+        # Re-create split
+        dataset = range(total_len) 
+        generator = torch.Generator().manual_seed(42)
+        _, _, test_ds = random_split(dataset, [train_len, val_len, test_len], generator=generator)
         
-        with torch.no_grad():
-            n_pred, h_pred = self.model(nn_input)
-            l_nn, a_nn = self.phys(h_pred, n_pred, self.gen.t_w, self.gen.indentations)
+        ranges = self.gen.ranges 
+        
+        categorized_test_indices = {k: [] for k in ranges}
+        
+        # Filter
+        for idx in test_ds.indices:
+            for cat, (start, end) in ranges.items():
+                if start <= idx < end:
+                    categorized_test_indices[cat].append(idx)
+                    break
+                    
+        return categorized_test_indices
+
+    def validate_on_test_set(self):
+        """
+        Plots one random sample from the Test Set for each category.
+        Guaranteed to be data the network NEVER saw during training.
+        """
+        test_buckets = self.get_test_set_indices_by_category()
+        
+        for category, indices in test_buckets.items():
+            if len(indices) == 0:
+                print(f"Warning: No test samples found for {category}")
+                continue
+                
+            # Pick one random index from the Test bucket
+            random_test_idx = np.random.choice(indices)
+            print(f"Validating {category.upper()} on Test Sample #{random_test_idx}...")
             
-        self.plot_comparison(t_l, t_a, gt_n, gt_h, l_nn, a_nn, n_pred, h_pred, title)
+            # Fetch that specific sample
+            t_l, t_a, gt_n, gt_h, title = self.gen.get_custom_sample(random_test_idx, category)
+            
+            # Predict
+            prepend_val = torch.zeros(1, 1).to(self.device)
+            raw_stiff = torch.diff(t_l, dim=1, prepend=prepend_val)
+            
+            nn_input = torch.cat([
+                t_l / self.MAX_L, 
+                t_a / self.MAX_A, 
+                raw_stiff / self.MAX_S
+            ], dim=0).unsqueeze(0)
+            
+            with torch.no_grad():
+                n_pred, h_pred = self.model(nn_input)
+                l_nn, a_nn = self.phys(h_pred, n_pred, self.gen.t_w, self.gen.indentations)
+            
+            # Plot
+            self.plot_comparison(t_l, t_a, gt_n, gt_h, l_nn, a_nn, n_pred, h_pred, f"Test Set: {category} (#{random_test_idx})")
 
     def plot_comparison(self, t_l, t_a, gt_n, gt_h, l_nn, a_nn, n_pred, h_pred, title):
         fig = plt.figure(figsize=(14, 6))
         
         # Panel 1: Physics
         ax1 = plt.subplot(1, 2, 1)
-        # Plot Curves
         ax1.plot(t_l.cpu().numpy().flatten(), t_a.cpu().numpy().flatten(), 'k-', lw=3, label="Ground Truth")
         ax1.plot(l_nn.cpu().numpy().flatten(), a_nn.cpu().numpy().flatten(), 'b--', lw=2, label="NN Prediction")
-        
         ax1.set_title(f"Contact Law: {title}")
         ax1.set_xlabel("Load [N]")
         ax1.set_ylabel("Area [m²]")
         ax1.legend()
         ax1.grid(True, alpha=0.3)
         
-        # Panel 2: Parameters (The Truth Test)
+        # Panel 2: Parameters
         ax2 = plt.subplot(1, 2, 2)
         width = 0.35
-        
-        # Sort by GT height to reveal structure
-        # If 'Switch', we should see two groups of bars
-        # If 'Sparse', we should see a gap on the left
         sorted_idx = torch.argsort(gt_h[0])
         gt_h_sorted = gt_h[0][sorted_idx].cpu().numpy()
         nn_h_sorted = h_pred[0][sorted_idx].cpu().detach().numpy()
-        
         indices = np.arange(len(gt_h_sorted))
         
         ax2.bar(indices - width/2, gt_h_sorted, width, label='Ground Truth', color='black', alpha=0.7)
         ax2.bar(indices + width/2, nn_h_sorted, width, label='NN Pred', color='blue', alpha=0.7)
-        
         ax2.set_title("Topography Structure (Sorted by Height)")
         ax2.set_xlabel("Asperity Index")
         ax2.set_ylabel("Height Offset h [m]")
@@ -101,9 +140,8 @@ class UnifiedValidator:
         
         plt.tight_layout()
         os.makedirs("plots", exist_ok=True)
-        # Clean filename
-        sname = title.split(":")[1].strip().split(" ")[0].lower() + f"_{title.split('#')[1][:-1]}"
-        save_path = f"plots/val_fixed_{sname}.png"
+        sname = title.split(":")[1].strip().split(" ")[0].lower()
+        save_path = f"plots/val_test_{sname}.png"
         plt.savefig(save_path, dpi=150)
         print(f"[Validator] Saved plot to {save_path}")
         plt.close()
@@ -111,8 +149,5 @@ class UnifiedValidator:
 if __name__ == "__main__":
     val = UnifiedValidator("config.yaml")
     
-    print("--- Running Validation on Mixed Dataset ---")
-    val.validate_sample(category="switch", offset=10)
-    val.validate_sample(category="sparse", offset=10)
-    val.validate_sample(category="wall", offset=5)
-    val.validate_sample(category="lhs", offset=5)
+    # Run the rigorous Test Set Validation
+    val.validate_on_test_set()

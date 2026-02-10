@@ -19,3 +19,11 @@ training:
   epochs: 60
   learning_rate: 0.001
   device: "cuda"
+
+generation:
+  ratios:
+    lhs: 0.45       
+    single: 0.10
+    wall: 0.10      
+    sparse: 0.15
+    switch: 0.20

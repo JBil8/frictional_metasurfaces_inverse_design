@@ -1,14 +1,6 @@
 import torch
-import numpy as np
 import sys
 import os
-
-# Adjust path to import from parent directories
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-import torch
-import os
-import sys
 
 # Adjust path to import from parent directories
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -35,14 +27,36 @@ class TargetGenerator:
         self.total_samples = self.data['y'].shape[0]
         
         # Define Category Indices based on your generation ratios
-        # Ratios: 50% LHS, 10% Single, 5% Wall, 15% Sparse, 20% Bimodal
-        self.indices = {
-            "lhs":      0,
-            "single":   int(0.50 * self.total_samples),
-            "wall":     int(0.60 * self.total_samples),
-            "sparse":   int(0.65 * self.total_samples),
-            "switch":   int(0.80 * self.total_samples) # Bimodal starts at 80%
-        }
+        self.ranges = self._calculate_ranges(cfg['generation']['ratios'])
+
+    def _calculate_ranges(self, ratios):
+        """
+        Converts config ratios into absolute start/end indices.
+        Returns: {'lhs': (0, 225000), 'single': (225000, 275000), ...}
+        """
+        ranges = {}
+        current_idx = 0
+        total = self.total_samples
+        
+        # The order MUST match surface_generator.py exactly!
+        order = ['lhs', 'single', 'wall', 'sparse', 'switch']
+        
+        for key in order:
+            count = int(ratios[key] * total)
+            
+            # Handle rounding fix for LHS (if it was the first one adjusted)
+            # A safer way is to calculate simple cumulative sums
+            if key == 'lhs':
+                # Re-calculate LHS count based on remainder to match generator logic
+                others = sum([int(ratios[k] * total) for k in order if k != 'lhs'])
+                count = total - others
+            
+            start = current_idx
+            end = start + count
+            ranges[key] = (start, end)
+            current_idx = end
+            
+        return ranges
 
     def get_dataset_sample(self, category="lhs", offset=0, noise_level=0.0):
         """
@@ -52,9 +66,13 @@ class TargetGenerator:
             offset: Index offset (e.g., 0 for the first sample of that type)
             noise_level: Add Gaussian noise to the Load/Area curves inputs?
         """
-        start_idx = self.indices.get(category, 0)
-        idx = start_idx + offset
         
+        if category not in self.ranges:
+            raise ValueError(f"Unknown category: {category}")
+            
+        start, end = self.ranges[category]
+        idx = start + offset
+
         # Safety check
         if idx >= self.total_samples:
             print(f"Warning: Index {idx} out of bounds. wrapping around.")

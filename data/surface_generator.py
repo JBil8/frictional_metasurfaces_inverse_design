@@ -60,7 +60,6 @@ class SurfaceGenerator:
         # These are the theoretical maximums
         split_idx = n_samples // 2
         h[:split_idx].fill_(0.0)
-        
 
         roughness_scale = 0.02 * self.max_delta
         
@@ -117,34 +116,51 @@ class SurfaceGenerator:
             
         return n, h
     
-    def mix_dataset(self, total_samples=100000):
-        # Adjusted Ratios to emphasize "Physics Basis"
-        n_lhs = int(0.50 * total_samples)      # 50% General Noise
-        n_singles = int(0.10 * total_samples)  # 10% Pure Singles (Basis)
-        n_walls = int(0.05 * total_samples)    # 5% Pure Walls 
-        n_sparse = int(0.15 * total_samples)   # 15% Sparse
-        n_bimodal = int(0.20 * total_samples)  # 20% Switches
+    def mix_dataset(self, total_samples=None):
+        if total_samples is None:
+            total_samples = self.cfg['data']['n_samples']
+            
+        ratios = self.cfg['generation']['ratios']
+        
+        # Calculate raw counts
+        n_lhs = int(ratios['lhs'] * total_samples)
+        n_single = int(ratios['single'] * total_samples)
+        n_wall = int(ratios['wall'] * total_samples)
+        n_sparse = int(ratios['sparse'] * total_samples)
+        n_switch = int(ratios['switch'] * total_samples)
+        
+        # Fix rounding errors (Assign remainder to LHS)
+        current_sum = n_lhs + n_single + n_wall + n_sparse + n_switch
+        diff = total_samples - current_sum
+        n_lhs += diff
+        
+        print(f"Generating Dataset ({total_samples} samples):")
+        print(f"  - LHS:    {n_lhs}")
+        print(f"  - Single: {n_single}")
+        print(f"  - Wall:   {n_wall}")
+        print(f"  - Sparse: {n_sparse}")
+        print(f"  - Switch: {n_switch}")
         
         # 1. Standard LHS
-        print(f"Generating {n_lhs} LHS samples...")
         sampler = LatinHypercube(d=2*self.n_asp)
         sample = sampler.random(n=n_lhs)
         n_lhs_data = 1.0 + torch.tensor(sample[:, :self.n_asp]).float() * 7.0
         h_lhs_data = torch.tensor(sample[:, self.n_asp:]).float() * self.max_delta
         
-        # 2. Exotic
-        n_si, h_si = self.generate_canonical_singles(n_singles)
-        n_wa, h_wa = self.generate_canonical_walls(n_walls)
+        # 2. Exotic Categories
+        n_si, h_si = self.generate_canonical_singles(n_single)
+        n_wa, h_wa = self.generate_canonical_walls(n_wall)
         n_sp, h_sp = self.generate_sparse(n_sparse)
-        n_bi, h_bi = self.generate_bimodal(n_bimodal)
+        n_bi, h_bi = self.generate_bimodal(n_switch)
         
-        # 3. Concatenate
+        # 3. Concatenate (Order must match the config logic!)
+        # Order: LHS -> Single -> Wall -> Sparse -> Switch
         all_n = torch.cat([n_lhs_data, n_si, n_wa, n_sp, n_bi])
         all_h = torch.cat([h_lhs_data, h_si, h_wa, h_sp, h_bi])
         
         # 4. Sort & Normalize
         all_h, _ = torch.sort(all_h, dim=1)
-        all_h = all_h - all_h[:, 0:1] # Normalize relative to first contact
+        all_h = all_h - all_h[:, 0:1] 
         
         return all_n, all_h
     
