@@ -103,24 +103,30 @@ def main():
                 # Normalize reconstruction
                 rec_l = rec_l / max_load
                 rec_a = rec_a / max_area
+
+                n_asperities = cfg['physics']['n_asperities']
                 
                 # --- LOSS CALCULATION ---
-                # 1. Logarithmic Loss (Fixes the magnitude bias)
-                loss_log_load = nn.MSELoss()(torch.log1p(rec_l), torch.log1p(bx[:, 0, :]))
-                loss_log_area = nn.MSELoss()(torch.log1p(rec_a), torch.log1p(bx[:, 1, :]))
-                
-                # 2. Slope Loss (Fixes the shape/exponents)
+                # Updated Loss Block for Training
+                criterion_L1 = nn.L1Loss()
+                criterion_MSE = nn.MSELoss()
+
+                # 1. Physics Loss (L1 is sharper)
+                loss_log_load = criterion_L1(torch.log1p(rec_l), torch.log1p(bx[:, 0, :]))
+                loss_log_area = criterion_L1(torch.log1p(rec_a), torch.log1p(bx[:, 1, :]))
+
+                # 2. Slope Loss (MSE is still good here to enforce smoothness/continuity)
                 target_slope = bx[:, 0, 1:] - bx[:, 0, :-1] 
                 recon_slope  = rec_l[:, 1:] - rec_l[:, :-1]
-                loss_slope = nn.MSELoss()(recon_slope, target_slope)
+                loss_slope = criterion_MSE(recon_slope, target_slope) 
 
-                # 3. Combine Physics Losses
-                loss_phys = (loss_log_load + loss_log_area) * 10.0 + (loss_slope * 100.0)
+                # 3. Combine 
+                # L1 loss values are usually smaller than MSE, so you might need to boost the weight slightly
+                loss_phys = (loss_log_load + loss_log_area) * 20.0 + (loss_slope * 10.0)
 
-                # 4. Parameter Regularization
-                n_asperities = cfg['physics']['n_asperities']
-                loss_param = 5.0 * nn.MSELoss()(p_n, by[:, :n_asperities]) + \
-                             1.0 * nn.MSELoss()(p_h, by[:, n_asperities:])
+                # 4. Parameters (Keep MSE for parameters)
+                loss_param = 5.0 * criterion_MSE(p_n, by[:, :n_asperities]) + \
+                            1.0 * criterion_MSE(p_h, by[:, n_asperities:])
 
                 total_loss = loss_phys + (lambda_reg * loss_param)
                 
