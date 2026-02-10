@@ -5,3 +5,4 @@ tamaas
 matplotlib
 mlflow
 mpi4py
+tqdm

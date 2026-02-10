@@ -1,4 +1,13 @@
+import sys
+import os
 import torch
+from torch.utils.data import DataLoader, TensorDataset
+from tqdm import tqdm
+
+# Ensure we can import from parent directory
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from utils.config import load_config
+from physics.differentiable import AxisymmetricContactLayer
 import numpy as np
 from scipy.stats.qmc import LatinHypercube
 
@@ -124,3 +133,85 @@ class SurfaceGenerator:
         all_h = all_h - all_h[:, 0:1] # Normalize relative to first contact
         
         return all_n, all_h
+    
+
+if __name__ == "__main__":
+    # 1. Setup
+    print("--- Starting Dataset Generation ---")
+    config_path = os.path.join(os.path.dirname(__file__), "../config.yaml")
+    cfg = load_config(config_path)
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    # 2. Generate Parameters (The "Y" data)
+    gen = SurfaceGenerator(cfg)
+    n_samples = cfg['data']['n_samples']
+    
+    print(f"Generating {n_samples} mixed surface parameters...")
+    all_n, all_h = gen.mix_dataset(total_samples=n_samples)
+    
+    # Move to device for physics calculation
+    all_n = all_n.to(device)
+    all_h = all_h.to(device)
+    
+    phys = AxisymmetricContactLayer(E_star=cfg['physics']['E_star']).to(device)
+    
+    # Prepare constants
+    R = cfg['physics']['radius']
+    n_asp = cfg['physics']['n_asperities']
+    max_d = cfg['physics']['max_delta_ratio'] * R
+    n_steps = cfg['data']['n_steps']
+    
+    # Indentation history (same for all samples)
+    indentations = torch.linspace(0, max_d, n_steps).to(device).unsqueeze(0) # [1, steps]
+    t_w = torch.ones(1, n_asp).to(device) * 2.0 * R
+    
+    # Run in batches to avoid OOM
+    batch_size = 1000 # Physics batch size
+    dataset = TensorDataset(all_n, all_h)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    
+    all_loads = []
+    all_areas = []
+    all_stiff = []
+    
+    for batch_n, batch_h in tqdm(loader, desc="Physics Engine"):
+        with torch.no_grad():
+            # Expand indents to batch size
+            current_batch = batch_n.shape[0]
+            batch_ind = indentations.repeat(current_batch, 1)
+            
+            # Solve
+            load, area = phys(batch_h, batch_n, t_w, batch_ind)
+            
+            # Calculate Stiffness (dL/d_delta)
+            # Simple difference method
+            stiffness = torch.diff(load, dim=1, prepend=torch.zeros(current_batch, 1).to(device))
+            
+            all_loads.append(load.cpu())
+            all_areas.append(area.cpu())
+            all_stiff.append(stiffness.cpu())
+            
+    # Concatenate results
+    X_load = torch.cat(all_loads, dim=0) # [N, Steps]
+    X_area = torch.cat(all_areas, dim=0)
+    X_stiff = torch.cat(all_stiff, dim=0)
+    
+    # Stack into [N, 3, Steps] format for CNN input
+    X_final = torch.stack([X_load, X_area, X_stiff], dim=1)
+    
+    # Concatenate parameters for Y: [N, 32] (16 exponents + 16 heights)
+    Y_final = torch.cat([all_n.cpu(), all_h.cpu()], dim=1)
+    
+    # 4. Save
+    # We save to a NEW filename to distinguish from the old LHS dataset
+    save_path = os.path.join(os.path.dirname(__file__), "dataset_16_asp_mixed.pt")
+    
+    print(f"Saving dataset to {save_path}...")
+    torch.save({
+        "x": X_final, # Inputs: (Load, Area, Stiffness)
+        "y": Y_final  # Targets: (n, h)
+    }, save_path)
+    
+    print("--- Dataset Generation Complete ---")
