@@ -34,12 +34,19 @@ class SurfaceInverseModel(nn.Module):
             self.flatten_size = dummy_out.view(1, -1).size(1)
         
         # --- Decoder ---
-        hidden_dim = max(256, self.n_asp * 10) 
+        hidden_dim = config['model']['hidden_dim']
+        hidden_dim = max(hidden_dim, self.n_asp * 10) 
         
         self.fc_layers = nn.Sequential(
             nn.Linear(self.flatten_size, hidden_dim),
             nn.ReLU(),
             nn.Dropout(0.1),
+            
+            # Extra Layer for complexity
+            nn.Linear(hidden_dim, hidden_dim), 
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.ReLU(),
             nn.Linear(hidden_dim // 2, self.n_asp * 2) 

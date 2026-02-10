@@ -12,10 +12,10 @@ data:
   n_samples: 500000
 
 model:
-  hidden_dim: 512
+  hidden_dim: 1024
 
 training:
-  batch_size: 2048
+  batch_size: 1024
   epochs: 60
   learning_rate: 0.001
   device: "cuda"
