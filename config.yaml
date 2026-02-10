@@ -7,15 +7,15 @@ physics:
   E_star: 1.0
 
 data:
-  path: "data/dataset_16_asp_mixed.pt"
+  path: "data/dataset_16_asp.pt"
   n_steps: 500
   n_samples: 500000
 
 model:
-  hidden_dim: 256
+  hidden_dim: 512
 
 training:
-  batch_size: 4096
-  epochs: 50
+  batch_size: 2048
+  epochs: 60
   learning_rate: 0.001
   device: "cuda"

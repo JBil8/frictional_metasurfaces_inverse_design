@@ -1,11 +1,13 @@
-
-
-import sys, os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
+import sys
+import os
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, random_split
+
+# Ensure we can import from parent directory
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from utils.normalization import get_theoretical_limits
+
 from utils.config import load_config
 from ml_models.model_mlp import SurfaceInverseModel
 from physics.differentiable import AxisymmetricContactLayer
@@ -20,46 +22,56 @@ def evaluate_model_performance():
     print(f"Running evaluation on: {device_str.upper()}")
     
     # 2. Load Data
-    # FIX: map_location ensure it loads to CPU if GPU is missing
     print(f"Loading data from {cfg['data']['path']}...")
     data = torch.load(cfg['data']['path'], map_location=device)
     
     X = data["x"] # (N, 3, Steps)
     Y = data["y"] # (N, Params)
     
-    # Normalize (Apply same logic as training)
-    max_load = X[:, 0, :].max()
-    max_area = X[:, 1, :].max()
-    max_stiff = X[:, 2, :].max()
+    # --- CRITICAL FIX: Deterministic Split ---
+    # We must replicate the exact split used in training to ensure
+    # we are testing on the correct 'unseen' data.
     
-    X[:, 0, :] /= max_load
-    X[:, 1, :] /= max_area
-    X[:, 2, :] /= max_stiff
+    dataset = TensorDataset(X, Y)
+    total_len = len(dataset)
     
-    # Create Test Set (Last 10%)
-    total_len = len(X)
-    test_start_idx = int(0.9 * total_len)
+    # Ratios must match your training script (e.g. 0.8, 0.1, 0.1)
+    train_len = int(0.8 * total_len)
+    val_len = int(0.1 * total_len)
+    test_len = total_len - train_len - val_len
     
-    test_x = X[test_start_idx:]
-    test_y = Y[test_start_idx:]
+    # Fixed seed for reproducibility (Must match training seed!)
+    generator = torch.Generator().manual_seed(42)
     
-    test_loader = DataLoader(TensorDataset(test_x, test_y), batch_size=100)
+    _, _, test_ds = random_split(
+        dataset, 
+        [train_len, val_len, test_len], 
+        generator=generator
+    )
     
-    # Load Model
+    print(f"Test Set Size: {len(test_ds)} samples (Randomly sampled, consistent with Training)")
+    test_loader = DataLoader(test_ds, batch_size=100, shuffle=False)
+    
+    # 3. Calculate Normalization Factors
+    limits = get_theoretical_limits(cfg, device)
+    MAX_L = limits['max_load']
+    MAX_A = limits['max_area']
+    MAX_S = limits['max_stiff']
+    
+    # 4. Load Model
     model = SurfaceInverseModel(cfg).to(device)
     
-    # FIX: map_location here as well for model weights
     print("Loading model weights...")
     state_dict = torch.load("model_final.pth", map_location=device)
     model.load_state_dict(state_dict)
     model.eval()
     
-    # Physics Layer
+    # Physics Layer for Reconstruction
     physics = AxisymmetricContactLayer(E_star=cfg['physics']['E_star']).to(device)
     max_d = cfg['physics']['max_delta_ratio'] * cfg['physics']['radius']
     indentations = torch.linspace(0, max_d, cfg['data']['n_steps']).unsqueeze(0).to(device)
 
-    # 3. Accumulate Errors
+    # 5. Accumulate Errors
     mse_load = 0.0
     mse_area = 0.0
     mse_params = 0.0
@@ -67,28 +79,35 @@ def evaluate_model_performance():
     
     criterion = nn.MSELoss(reduction='sum')
     
-    print(f"Evaluating on {len(test_x)} test samples...")
+    print(f"Starting evaluation loop...")
     
     with torch.no_grad():
         for bx, by in test_loader:
             bx, by = bx.to(device), by.to(device)
             batch_size = bx.size(0)
             
-            # Predict
-            p_n, p_h = model(bx)
+            # --- Normalize Input on the fly ---
+            # (Because random_split gave us raw tensors from the original X)
+            bx_norm = bx.clone()
+            bx_norm[:, 0, :] /= MAX_L
+            bx_norm[:, 1, :] /= MAX_A
+            bx_norm[:, 2, :] /= MAX_S
+            
+            # Predict (Pass Normalized Input)
+            p_n, p_h = model(bx_norm)
             
             # Reconstruct Physics
             p_w = torch.ones_like(p_n) * 2.0 * cfg['physics']['radius']
             batch_ind = indentations.repeat(batch_size, 1)
             rec_l, rec_a = physics(p_h, p_n, p_w, batch_ind)
             
-            # Normalize Reconstruction
-            rec_l /= max_load
-            rec_a /= max_area
+            # Normalize Reconstruction (to match input scale for loss)
+            rec_l /= MAX_L
+            rec_a /= MAX_A
             
-            # Calculate Errors
-            loss_l = criterion(rec_l, bx[:, 0, :])
-            loss_a = criterion(rec_a, bx[:, 1, :])
+            # Calculate Errors (Compare against normalized inputs)
+            loss_l = criterion(rec_l, bx_norm[:, 0, :])
+            loss_a = criterion(rec_a, bx_norm[:, 1, :])
             
             # Parameter Error
             pred_params = torch.cat([p_n, p_h], dim=1)
@@ -99,9 +118,9 @@ def evaluate_model_performance():
             mse_params += loss_p.item()
             total_samples += batch_size
 
-    # 4. Final Calculation
+    # 6. Final Calculation
     n_steps = cfg['data']['n_steps']
-    n_params = test_y.shape[1]
+    n_params = Y.shape[1]
     
     avg_mse_load = mse_load / (total_samples * n_steps)
     avg_mse_area = mse_area / (total_samples * n_steps)

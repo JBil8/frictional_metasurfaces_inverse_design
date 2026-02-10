@@ -14,6 +14,7 @@ except ImportError:
 from ml_models.model_mlp import SurfaceInverseModel
 from physics.differentiable import AxisymmetricContactLayer
 from utils.config import load_config
+from utils.normalization import get_theoretical_limits
 
 class UnifiedValidator:
     def __init__(self, cfg_path="config.yaml"):
@@ -36,9 +37,10 @@ class UnifiedValidator:
              
         data = torch.load(data_path, map_location=self.device)
         X_all = data["x"]
-        self.MAX_L = X_all[:, 0, :].max().item()
-        self.MAX_A = X_all[:, 1, :].max().item()
-        self.MAX_S = X_all[:, 2, :].max().item()
+        limits = get_theoretical_limits(self.cfg, self.device)
+        self.MAX_L = limits['max_load']
+        self.MAX_A = limits['max_area']
+        self.MAX_S = limits['max_stiff']
         
         # 2. Load Physics Engine
         self.phys = AxisymmetricContactLayer(E_star=self.cfg['physics']['E_star']).to(self.device)
@@ -57,59 +59,44 @@ class UnifiedValidator:
         # 4. Initialize Target Generator
         self.gen = TargetGenerator(self.phys, self.cfg, self.device)
 
-    def run_refinement(self, target_l, target_a, init_n, init_h, steps=500):
-        """
-        Active Learning / Test-Time Optimization.
-        Uses Gradient Descent to fine-tune the NN output.
-        """
-        print(f"  [Refinement] Optimizing for {steps} steps...")
+    def run_refinement(self, target_l, target_a, init_n, init_h, steps=50):
+        print(f"  [Refinement] Running L-BFGS Optimization...")
         
-        # Clone and detach to create new leaf variables for optimization
         opt_n = init_n.clone().detach().requires_grad_(True)
         opt_h = init_h.clone().detach().requires_grad_(True)
         
-        # Optimizer: Higher LR for heights (h) because they have larger magnitude/impact than exponents (n)
-        optimizer = optim.Adam([
-            {'params': opt_n, 'lr': 0.01}, 
-            {'params': opt_h, 'lr': 0.02} 
-        ])
-        
-        # Scheduler helps settle into the final solution
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=30, factor=0.5)
+        # L-BFGS is powerful but requires a closure function
+        optimizer = optim.LBFGS([opt_n, opt_h], lr=0.5, max_iter=20, history_size=20)
         
         t_w = self.gen.t_w
         ind = self.gen.indentations
-        loss_history = []
         
-        for i in range(steps):
+        def closure():
             optimizer.zero_grad()
             
-            # Forward pass through physics
-            rec_l, rec_a = self.phys(opt_h, opt_n, t_w, ind)
-            
-            # Loss Function:
-            # We use L1 Loss (MAE) because it is robust to "kinks" and sharp transitions.
-            # We weight Area higher (x20) because that's usually the target shape we want to match.
-            loss_area = torch.nn.functional.l1_loss(rec_a, target_a)
-            loss_load = torch.nn.functional.l1_loss(rec_l, target_l)
-            
-            total_loss = loss_area * 20.0 + loss_load
-            
-            total_loss.backward()
-            optimizer.step()
-            
-            # Project constraints (Clamp in-place)
+            # Clamp variables directly inside closure to keep them physical during line search
             with torch.no_grad():
                 opt_n.data.clamp_(1.0, 8.0)
                 opt_h.data.clamp_(0.0, ind.max().item())
             
-            scheduler.step(total_loss)
-            loss_history.append(total_loss.item())
+            rec_l, rec_a = self.phys(opt_h, opt_n, t_w, ind)
             
-            if i % 100 == 0:
-                print(f"    Step {i}: Loss = {total_loss.item():.6f}")
+            loss_area = torch.nn.functional.l1_loss(rec_a, target_a)
+            loss_load = torch.nn.functional.l1_loss(rec_l, target_l)
             
-        return opt_n.detach(), opt_h.detach(), loss_history
+            # Stronger weight on Area matching
+            total_loss = loss_area * 50.0 + loss_load
+            
+            total_loss.backward()
+            return total_loss
+
+        # Run optimization steps
+        for i in range(steps):
+            loss = optimizer.step(closure)
+            if i % 10 == 0:
+                print(f"    L-BFGS Step {i}: Loss {loss.item():.6f}")
+                
+        return opt_n.detach(), opt_h.detach(), []
 
     def validate(self, target_type="switch", active_learning=True, save_plot=True):
         print(f"\n--- Starting Validation: {target_type} (Active Learning: {active_learning}) ---")
@@ -204,9 +191,9 @@ class UnifiedValidator:
         plt.tight_layout()
         
         # Save to plots directory
-        os.makedirs("../plots", exist_ok=True)
+        os.makedirs("/plots", exist_ok=True)
         sname = title.split(" ")[0].lower()
-        save_path = f"../plots/val_{sname}.png"
+        save_path = f"/plots/val_{sname}.png"
         plt.savefig(save_path, dpi=150)
         print(f"[UnifiedValidator] Plot saved to {save_path}")
         plt.close()
@@ -214,4 +201,4 @@ class UnifiedValidator:
 # Example usage if run directly
 if __name__ == "__main__":
     val = UnifiedValidator("config.yaml")
-    val.validate(target_type="switch", active_learning=True)
+    val.validate(target_type="step", active_learning=True)
