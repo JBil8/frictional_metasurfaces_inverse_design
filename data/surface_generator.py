@@ -40,24 +40,38 @@ class SurfaceGenerator:
         n_vals = torch.linspace(1.0, 8.0, n_samples).unsqueeze(1)
         n = n_vals.repeat(1, self.n_asp)
         
-        # (Optional) Randomize the index of the active asperity so it doesn't memorize "Index 0"
-        # But since we sort heights later, Index 0 will always be the active one.
+        # since we sort heights later, Index 0 will always be the active one.
         return n, h
 
     def generate_canonical_walls(self, n_samples):
         """
         The "Stiffest Limits".
-        Generates surfaces where ALL asperities touch at once (h=0).
+        generates a mix of Perfect Walls (h=0) and Quasi-Walls (h ~ epsilon).
+        This helps the NN understand the transition to the limit.
         """
-        print(f"  > Generating {n_samples} Canonical Walls...")
+        print(f"  > Generating {n_samples} Canonical & Quasi-Walls...")
         n, h = self.get_base_batch(n_samples)
         
-        # All heights = 0 (Wall)
-        h.fill_(0.0)
-        
-        # Sweep exponents
+        # 1. Sweep Exponents (1.0 to 8.0)
         n_vals = torch.linspace(1.0, 8.0, n_samples).unsqueeze(1)
         n = n_vals.repeat(1, self.n_asp)
+        
+        # 2. Perfect Walls (First 50%)
+        # These are the theoretical maximums
+        split_idx = n_samples // 2
+        h[:split_idx].fill_(0.0)
+        
+
+        roughness_scale = 0.02 * self.max_delta
+        
+        # Generate random tiny heights
+        micro_noise = torch.rand(n_samples - split_idx, self.n_asp) * roughness_scale
+        h[split_idx:] = micro_noise
+        
+        # 4. Sort and Normalize (Critical)
+        # Even Quasi-walls must follow the sorted convention
+        h, _ = torch.sort(h, dim=1)
+        h = h - h[:, 0:1]
         
         return n, h
 
@@ -71,10 +85,10 @@ class SurfaceGenerator:
         
         for i in range(n_samples):
             # Reduced count: Strictly 1 to 3 active
-            n_active = np.random.randint(1, 4)
+            n_active = self.n_asp // 4
             
-            h_active = torch.rand(n_active) * (0.05 * self.max_delta) # Very tight contact
-            h_inactive = self.max_delta * (0.5 + 0.5 * torch.rand(self.n_asp - n_active))
+            h_active = torch.rand(n_active) * (0.05 *self.max_delta) # Very tight contact
+            h_inactive = self.max_delta * 1.1 * torch.ones(self.n_asp - n_active)        # (0.5 + 0.5 * torch.rand(self.n_asp - n_active))
             
             combined = torch.cat([h_active, h_inactive])
             h[i] = combined[torch.randperm(self.n_asp)]
@@ -106,8 +120,8 @@ class SurfaceGenerator:
     def mix_dataset(self, total_samples=100000):
         # Adjusted Ratios to emphasize "Physics Basis"
         n_lhs = int(0.50 * total_samples)      # 50% General Noise
-        n_singles = int(0.10 * total_samples)  # 10% Pure Singles (Basis) [NEW]
-        n_walls = int(0.05 * total_samples)    # 5% Pure Walls [NEW]
+        n_singles = int(0.10 * total_samples)  # 10% Pure Singles (Basis)
+        n_walls = int(0.05 * total_samples)    # 5% Pure Walls 
         n_sparse = int(0.15 * total_samples)   # 15% Sparse
         n_bimodal = int(0.20 * total_samples)  # 20% Switches
         
@@ -138,6 +152,9 @@ class SurfaceGenerator:
 if __name__ == "__main__":
     # 1. Setup
     print("--- Starting Dataset Generation ---")
+    
+    # Load Config
+    # We assume this script is located in 'data/' and config is in root
     config_path = os.path.join(os.path.dirname(__file__), "../config.yaml")
     cfg = load_config(config_path)
     
@@ -155,20 +172,20 @@ if __name__ == "__main__":
     all_n = all_n.to(device)
     all_h = all_h.to(device)
     
+    # 3. Solve Physics (The "X" data)
+    print("Solving physics to generate Load/Area curves...")
     phys = AxisymmetricContactLayer(E_star=cfg['physics']['E_star']).to(device)
     
-    # Prepare constants
+    # Constants
     R = cfg['physics']['radius']
-    n_asp = cfg['physics']['n_asperities']
     max_d = cfg['physics']['max_delta_ratio'] * R
     n_steps = cfg['data']['n_steps']
     
-    # Indentation history (same for all samples)
-    indentations = torch.linspace(0, max_d, n_steps).to(device).unsqueeze(0) # [1, steps]
-    t_w = torch.ones(1, n_asp).to(device) * 2.0 * R
+    indentations = torch.linspace(0, max_d, n_steps).to(device).unsqueeze(0)
+    t_w = torch.ones(1, cfg['physics']['n_asperities']).to(device) * 2.0 * R
     
-    # Run in batches to avoid OOM
-    batch_size = 1000 # Physics batch size
+    # Batch Processing
+    batch_size = 1000 
     dataset = TensorDataset(all_n, all_h)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     
@@ -178,15 +195,13 @@ if __name__ == "__main__":
     
     for batch_n, batch_h in tqdm(loader, desc="Physics Engine"):
         with torch.no_grad():
-            # Expand indents to batch size
             current_batch = batch_n.shape[0]
             batch_ind = indentations.repeat(current_batch, 1)
             
             # Solve
             load, area = phys(batch_h, batch_n, t_w, batch_ind)
             
-            # Calculate Stiffness (dL/d_delta)
-            # Simple difference method
+            # Stiffness
             stiffness = torch.diff(load, dim=1, prepend=torch.zeros(current_batch, 1).to(device))
             
             all_loads.append(load.cpu())
@@ -194,24 +209,25 @@ if __name__ == "__main__":
             all_stiff.append(stiffness.cpu())
             
     # Concatenate results
-    X_load = torch.cat(all_loads, dim=0) # [N, Steps]
-    X_area = torch.cat(all_areas, dim=0)
-    X_stiff = torch.cat(all_stiff, dim=0)
+    X_final = torch.stack([
+        torch.cat(all_loads, dim=0),
+        torch.cat(all_areas, dim=0),
+        torch.cat(all_stiff, dim=0)
+    ], dim=1)
     
-    # Stack into [N, 3, Steps] format for CNN input
-    X_final = torch.stack([X_load, X_area, X_stiff], dim=1)
-    
-    # Concatenate parameters for Y: [N, 32] (16 exponents + 16 heights)
     Y_final = torch.cat([all_n.cpu(), all_h.cpu()], dim=1)
     
-    # 4. Save
-    # We save to a NEW filename to distinguish from the old LHS dataset
-    save_path = os.path.join(os.path.dirname(__file__), "dataset_16_asp_mixed.pt")
+    # 4. Save using Config Path
+    # We resolve the path relative to the project root (Current Working Directory)
+    save_path = cfg['data']['path']
     
-    print(f"Saving dataset to {save_path}...")
+    # Ensure the directory exists (e.g., if path is 'data/subdir/dataset.pt')
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    
+    print(f"Saving dataset to: {save_path}")
     torch.save({
-        "x": X_final, # Inputs: (Load, Area, Stiffness)
-        "y": Y_final  # Targets: (n, h)
+        "x": X_final,
+        "y": Y_final 
     }, save_path)
     
     print("--- Dataset Generation Complete ---")
