@@ -116,49 +116,90 @@ class SurfaceGenerator:
             
         return n, h
     
-    def mix_dataset(self, total_samples=None):
-        if total_samples is None:
-            total_samples = self.cfg['data']['n_samples']
+    # ... (Previous methods: get_base_batch, generate_canonical_singles, etc.) ...
+
+    def generate_random_sums(self, n_samples):
+        """
+        Teaches the NN the 'Principle of Superposition'.
+        Instead of picking heights from a fixed distribution, we explicitly sum
+        random numbers of asperities. This creates a mix of Uniform, Gaussian, 
+        and Exponential-like surfaces naturally.
+        """
+        print(f"  > Generating {n_samples} Random Sums (Superposition)...")
+        n, h = self.get_base_batch(n_samples)
+        
+        # Random Exponents for everyone (1.0 to 8.0)
+        n = 1.0 + torch.rand(n_samples, self.n_asp) * 7.0
+        
+        for i in range(n_samples):
+            # 1. How many asperities are active? (1 to N)
+            n_active = np.random.randint(1, self.n_asp + 1)
             
+            # 2. Pick heights for active ones
+            # Mix of Uniform (standard) and Clustered (exponential-ish)
+            if np.random.rand() > 0.5:
+                active_h = torch.rand(n_active) * self.max_delta
+            else:
+                # Clustered near 0 with long tail
+                active_h = torch.abs(torch.randn(n_active)) * (0.3 * self.max_delta)
+            
+            # 3. Inactive ones pushed far away
+            inactive_h = torch.ones(self.n_asp - n_active) * self.max_delta * 1.5
+            
+            combined = torch.cat([active_h, inactive_h])
+            
+            # Shuffle so "Active" isn't always index 0
+            h[i] = combined[torch.randperm(self.n_asp)]
+            
+        # Sort & Normalize (Crucial for the NN input format)
+        h, _ = torch.sort(h, dim=1)
+        h = h - h[:, 0:1]
+        
+        return n, h
+
+    def mix_dataset(self, total_samples=None):
+        if total_samples is None: total_samples = self.cfg['data']['n_samples']
         ratios = self.cfg['generation']['ratios']
         
-        # Calculate raw counts
+        # Calculate counts
         n_lhs = int(ratios['lhs'] * total_samples)
+        n_rnd = int(ratios['random_sum'] * total_samples) # NEW
         n_single = int(ratios['single'] * total_samples)
         n_wall = int(ratios['wall'] * total_samples)
         n_sparse = int(ratios['sparse'] * total_samples)
         n_switch = int(ratios['switch'] * total_samples)
         
-        # Fix rounding errors (Assign remainder to LHS)
-        current_sum = n_lhs + n_single + n_wall + n_sparse + n_switch
-        diff = total_samples - current_sum
-        n_lhs += diff
+        # Fix rounding (Assign remainder to LHS)
+        current_sum = n_lhs + n_rnd + n_single + n_wall + n_sparse + n_switch
+        n_lhs += (total_samples - current_sum)
         
         print(f"Generating Dataset ({total_samples} samples):")
-        print(f"  - LHS:    {n_lhs}")
-        print(f"  - Single: {n_single}")
-        print(f"  - Wall:   {n_wall}")
-        print(f"  - Sparse: {n_sparse}")
-        print(f"  - Switch: {n_switch}")
+        print(f"  - LHS:        {n_lhs}")
+        print(f"  - Random Sum: {n_rnd}")
+        print(f"  - Single:     {n_single}")
+        print(f"  - Wall:       {n_wall}")
+        print(f"  - Sparse:     {n_sparse}")
+        print(f"  - Switch:     {n_switch}")
         
-        # 1. Standard LHS
+        # 1. LHS
         sampler = LatinHypercube(d=2*self.n_asp)
         sample = sampler.random(n=n_lhs)
         n_lhs_data = 1.0 + torch.tensor(sample[:, :self.n_asp]).float() * 7.0
         h_lhs_data = torch.tensor(sample[:, self.n_asp:]).float() * self.max_delta
         
-        # 2. Exotic Categories
+        # 2. Others
+        n_rn, h_rn = self.generate_random_sums(n_rnd) # NEW
         n_si, h_si = self.generate_canonical_singles(n_single)
         n_wa, h_wa = self.generate_canonical_walls(n_wall)
         n_sp, h_sp = self.generate_sparse(n_sparse)
         n_bi, h_bi = self.generate_bimodal(n_switch)
         
-        # 3. Concatenate (Order must match the config logic!)
-        # Order: LHS -> Single -> Wall -> Sparse -> Switch
-        all_n = torch.cat([n_lhs_data, n_si, n_wa, n_sp, n_bi])
-        all_h = torch.cat([h_lhs_data, h_si, h_wa, h_sp, h_bi])
+        # 3. Concatenate (Order matters for Index Ranges!)
+        # Order: LHS -> Random Sum -> Single -> Wall -> Sparse -> Switch
+        all_n = torch.cat([n_lhs_data, n_rn, n_si, n_wa, n_sp, n_bi])
+        all_h = torch.cat([h_lhs_data, h_rn, h_si, h_wa, h_sp, h_bi])
         
-        # 4. Sort & Normalize
+        # 4. Final Sort & Normalize
         all_h, _ = torch.sort(all_h, dim=1)
         all_h = all_h - all_h[:, 0:1] 
         

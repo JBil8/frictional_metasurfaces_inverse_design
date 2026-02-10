@@ -110,38 +110,104 @@ class UnifiedValidator:
             # Plot
             self.plot_comparison(t_l, t_a, gt_n, gt_h, l_nn, a_nn, n_pred, h_pred, f"Test Set: {category} (#{random_test_idx})")
 
+    def validate_designed(self, target_type="linear"):
+        """
+        Validates on a purely synthetic target curve generated on the fly.
+        Useful for testing "Unseen Physics" (Linear, Saturating, etc.).
+        """
+        print(f"[Validator] Generating fresh synthetic target: {target_type}...")
+        
+        # 1. Generate the Target Curve (Load vs Area)
+        # Note: These targets do NOT have ground truth parameters (n, h)
+        if target_type == "linear":
+            t_l, t_a, title = self.gen.get_linear_coulomb()
+        elif target_type == "saturate":
+            t_l, t_a, title = self.gen.get_saturating_exponential()
+        elif target_type == "bilinear":
+            t_l, t_a, title = self.gen.get_bilinear_transition()
+        elif target_type == "power":
+            t_l, t_a, title = self.gen.get_power_law(exponent=1.5)
+        elif target_type == "switch":
+            t_l, t_a, title = self.gen.get_friction_switch()
+        elif target_type == "step":
+            t_l, t_a, title = self.gen.get_step_contact()
+        else:
+            raise ValueError(f"Unknown target type: {target_type}")
+
+        # 2. Prepare Input for NN
+        # Calculate stiffness
+        prepend_val = torch.zeros(1, 1).to(self.device)
+        raw_stiff = torch.diff(t_l, dim=1, prepend=prepend_val)
+        
+        # Normalize
+        nn_input = torch.cat([
+            t_l / self.MAX_L, 
+            t_a / self.MAX_A, 
+            raw_stiff / self.MAX_S
+        ], dim=0).unsqueeze(0)
+        
+        # 3. NN Prediction
+        with torch.no_grad():
+            n_pred, h_pred = self.model(nn_input)
+            
+            # Reconstruct the curve from the predicted parameters
+            l_nn, a_nn = self.phys(h_pred, n_pred, self.gen.t_w, self.gen.indentations)
+            
+        # 4. Plot
+        # We pass None for gt_n and gt_h because these synthetic curves 
+        # don't have a "true" surface topography behind them.
+        self.plot_comparison(t_l, t_a, None, None, l_nn, a_nn, n_pred, h_pred, f"Unseen: {title}")
+
     def plot_comparison(self, t_l, t_a, gt_n, gt_h, l_nn, a_nn, n_pred, h_pred, title):
+        """
+        Updated to handle cases where Ground Truth parameters (gt_n, gt_h) are missing.
+        """
         fig = plt.figure(figsize=(14, 6))
         
-        # Panel 1: Physics
+        # --- Panel 1: Physics (Load vs Area) ---
         ax1 = plt.subplot(1, 2, 1)
-        ax1.plot(t_l.cpu().numpy().flatten(), t_a.cpu().numpy().flatten(), 'k-', lw=3, label="Ground Truth")
+        ax1.plot(t_l.cpu().numpy().flatten(), t_a.cpu().numpy().flatten(), 'k-', lw=3, label="Target (Synthetic)")
         ax1.plot(l_nn.cpu().numpy().flatten(), a_nn.cpu().numpy().flatten(), 'b--', lw=2, label="NN Prediction")
+        
         ax1.set_title(f"Contact Law: {title}")
         ax1.set_xlabel("Load [N]")
         ax1.set_ylabel("Area [m²]")
         ax1.legend()
         ax1.grid(True, alpha=0.3)
         
-        # Panel 2: Parameters
+        # --- Panel 2: Parameters (Bar Chart) ---
         ax2 = plt.subplot(1, 2, 2)
         width = 0.35
-        sorted_idx = torch.argsort(gt_h[0])
-        gt_h_sorted = gt_h[0][sorted_idx].cpu().numpy()
-        nn_h_sorted = h_pred[0][sorted_idx].cpu().detach().numpy()
-        indices = np.arange(len(gt_h_sorted))
         
-        ax2.bar(indices - width/2, gt_h_sorted, width, label='Ground Truth', color='black', alpha=0.7)
-        ax2.bar(indices + width/2, nn_h_sorted, width, label='NN Pred', color='blue', alpha=0.7)
-        ax2.set_title("Topography Structure (Sorted by Height)")
-        ax2.set_xlabel("Asperity Index")
+        # If we have Ground Truth (Real Data), plot comparison
+        if gt_h is not None:
+            sorted_idx = torch.argsort(gt_h[0])
+            gt_h_sorted = gt_h[0][sorted_idx].cpu().numpy()
+            nn_h_sorted = h_pred[0][sorted_idx].cpu().detach().numpy()
+            indices = np.arange(len(gt_h_sorted))
+            
+            ax2.bar(indices - width/2, gt_h_sorted, width, label='Ground Truth', color='black', alpha=0.7)
+            ax2.bar(indices + width/2, nn_h_sorted, width, label='NN Pred', color='blue', alpha=0.7)
+        
+        # If we DO NOT have Ground Truth (Synthetic Target), just plot the prediction
+        else:
+            # Sort by predicted height for readability
+            sorted_idx = torch.argsort(h_pred[0])
+            nn_h_sorted = h_pred[0][sorted_idx].cpu().detach().numpy()
+            indices = np.arange(len(nn_h_sorted))
+            
+            ax2.bar(indices, nn_h_sorted, width, label='NN Pred (Inferred Structure)', color='blue', alpha=0.7)
+            ax2.text(0.5, 0.9, "No GT: Synthetic Target", transform=ax2.transAxes, ha='center')
+
+        ax2.set_title("Predicted Topography Structure")
+        ax2.set_xlabel("Asperity Index (Sorted)")
         ax2.set_ylabel("Height Offset h [m]")
         ax2.legend()
         
         plt.tight_layout()
         os.makedirs("plots", exist_ok=True)
-        sname = title.split(":")[1].strip().split(" ")[0].lower()
-        save_path = f"plots/val_test_{sname}.png"
+        sname = title.split(":")[1].strip().split(" ")[0].lower() if ":" in title else title.split(" ")[0].lower()
+        save_path = f"plots/val_unseen_{sname}.png"
         plt.savefig(save_path, dpi=150)
         print(f"[Validator] Saved plot to {save_path}")
         plt.close()
@@ -151,3 +217,10 @@ if __name__ == "__main__":
     
     # Run the rigorous Test Set Validation
     val.validate_on_test_set()
+    val.validate_designed(target_type="linear")
+
+    # Test if it can simulate "Bottoming out"
+    val.validate_designed(target_type="saturate")
+
+    # Test the transition
+    val.validate_designed(target_type="bilinear")

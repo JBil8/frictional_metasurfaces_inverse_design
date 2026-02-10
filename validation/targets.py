@@ -17,7 +17,18 @@ class TargetGenerator:
         # Standard width
         self.t_w = torch.ones(1, self.n_asp).to(device) * 2.0 * self.R
         self.indentations = torch.linspace(0, self.max_d, self.n_steps).unsqueeze(0).to(device)
+        h_wall = torch.zeros(1, self.n_asp).to(device)
+        n_wall = torch.ones(1, self.n_asp).to(device) * 8.0 
+        w_wall = self.t_w.clone()
         
+        # 2. Solve Physics
+        with torch.no_grad():
+            self.l_max, self.a_max = self.phys(h_wall, n_wall, w_wall, self.indentations)
+            
+        # 3. Also calculate the "Softest" limit (Cone, n=1) for lower bounds
+        n_cone = torch.ones(1, self.n_asp).to(device) * 1.0
+        with torch.no_grad():
+            self.l_min, self.a_min = self.phys(h_wall, n_cone, w_wall, self.indentations)
         # Load the Dataset for "Real Sample" validation
         print("[TargetGenerator] Loading dataset for validation sampling...")
         data_path = cfg['data']['path']
@@ -32,23 +43,25 @@ class TargetGenerator:
     def _calculate_ranges(self, ratios):
         """
         Converts config ratios into absolute start/end indices.
-        Returns: {'lhs': (0, 225000), 'single': (225000, 275000), ...}
         """
         ranges = {}
         current_idx = 0
         total = self.total_samples
         
-        # The order MUST match surface_generator.py exactly!
-        order = ['lhs', 'single', 'wall', 'sparse', 'switch']
+        # CRITICAL: This order must match 'mix_dataset' in surface_generator.py
+        order = ['lhs', 'random_sum', 'single', 'wall', 'sparse', 'switch']
         
         for key in order:
-            count = int(ratios[key] * total)
+            # Safety: If config is missing the new key, assume 0
+            if key not in ratios:
+                count = 0
+                print(f"Warning: Ratio for '{key}' missing in config. Assuming 0.")
+            else:
+                count = int(ratios[key] * total)
             
-            # Handle rounding fix for LHS (if it was the first one adjusted)
-            # A safer way is to calculate simple cumulative sums
+            # Rounding fix for LHS
             if key == 'lhs':
-                # Re-calculate LHS count based on remainder to match generator logic
-                others = sum([int(ratios[k] * total) for k in order if k != 'lhs'])
+                others = sum([int(ratios.get(k, 0) * total) for k in order if k != 'lhs'])
                 count = total - others
             
             start = current_idx
@@ -101,56 +114,70 @@ class TargetGenerator:
         
         return target_load, target_area, gt_n, gt_h, f"Dataset: {category.capitalize()} (#{offset})"
 
-    def get_power_law(self, exponent=1.5):
-        """Generates a standard Hertzian-like power law target."""
-        # We define P(d) and A(d) based on the "Max" envelope but scaled down
-        target_load = self.l_max * 0.5 # Target 50% of max load capacity
+    def get_linear_coulomb(self):
+        """
+        Generates a Linear relationship: Area = k * Load.
+        FIX: Use realistic loads for rough surfaces (e.g., 5% of max capacity).
+        """
+        # 1. Define bounds - Rough surfaces are SOFT!
+        # Use 5% of max load, not 70%.
+        scale_factor = 0.5 
+        target_load = self.l_max * scale_factor
         
-        # Theoretical Hertz: A ~ P^(2/3) (for n=2)
-        # General Power Law: A ~ P^(2/(n+1))
-        norm_load = target_load / target_load.max()
+        # 2. Linear Relation
+        # Slope: A rough surface might reach 5% of max area at 5% of max load
+        max_load_val = target_load.max()
         
-        # Scale Area based on the system's max area
-        target_area = self.a_max.max() * 0.5 * (norm_load ** (2.0 / (exponent + 1.0)))
+        # A_max is usually ~ P_max^(2/3). 
+        # We want a slope that stays well below the "Wall limit"
+        slope = (self.a_max.max() * 0.5) / max_load_val
+        target_area = target_load * slope
         
-        return target_load, target_area, f"Power Law (Exponent {exponent})"
+        return target_load, target_area, "Linear (Coulomb) Contact"
 
-    def get_friction_switch(self):
-        """Generates a feasible Bi-Modal Switch."""
-        # Use the Envelope to guarantee feasibility!
-        target_load = self.l_max.clone() # Use full load capacity
+    def get_saturating_exponential(self):
+        """
+        Generates a surface that 'bottoms out' smoothly.
+        """
+        # Rough surfaces saturate at lower loads
+        scale_factor = 0.25
+        target_load = self.l_max * scale_factor
         
-        # Create Sigmoid Transition
-        # This creates a smooth step from 0 to 1 over the duration
-        s_curve = torch.sigmoid(torch.linspace(-10, 10, self.n_steps)).to(self.device).unsqueeze(0)
+        norm_P = target_load / target_load.max()
         
-        # Phase 1: Slip (Low Friction)
-        # Target slightly more area than a single cone (e.g. 1.5 cones)
-        curve_slip = self.a_min * 1.5
+        # Saturate at a fraction of max area corresponding to this load scale
+        A_plateau = self.a_max.max() * 0.08
         
-        # Phase 2: Lock (High Friction)
-        # Target 90% of the maximum possible area (Punch behavior)
-        curve_lock = self.a_max * 0.9
+        k = 5.0 
+        target_area = A_plateau * (1.0 - torch.exp(-k * norm_P))
         
-        # Blend them: (1-s)*Slip + s*Lock
-        target_area = (1 - s_curve) * curve_slip + s_curve * curve_lock
-        
-        return target_load, target_area, "Friction Switch (Bimodal)"
+        return target_load, target_area, "Saturating (Roughness Flattening)"
 
-    def get_step_contact(self, n_steps=3):
-        """Generates a 'Staircase' target (Discrete jumps)."""
-        target_load = self.l_max * 0.8
+    def get_bilinear_transition(self):
+        """
+        Two linear regimes: Soft start -> Stiff finish.
+        """
+        # Transition happens at moderate loads
+        scale_factor = 0.25
+        target_load = self.l_max * scale_factor
+        norm_P = target_load / target_load.max()
+        
+        max_A = self.a_max.max().item() * 0.12 # Scale area expectations too
+        
+        knee_load = 0.4
+        
+        s1 = 0.8 * max_A  
+        s2 = 0.2 * max_A
+        
         target_area = torch.zeros_like(target_load)
+        mask_low = norm_P <= knee_load
+        mask_high = ~mask_low
         
-        max_a = self.a_max.max().item() * 0.8
+        target_area[mask_low] = norm_P[mask_low] * s1
+        A_knee = knee_load * s1
+        target_area[mask_high] = A_knee + (norm_P[mask_high] - knee_load) * s2
         
-        # Create discrete steps
-        for i in range(self.n_steps):
-            # Simple logic to create stepped area
-            step_idx = int((i / self.n_steps) * n_steps) + 1
-            target_area[0, i] = (step_idx / n_steps) * max_a
-            
-        return target_load, target_area, "Step Function"
+        return target_load, target_area, "Bilinear (Soft-to-Stiff)"
     
     def get_custom_sample(self, idx, label="Custom"):
         """Fetches a specific index directly."""

@@ -15,14 +15,15 @@ model:
   hidden_dim: 1024
 
 training:
-  batch_size: 1024
+  batch_size: 512
   epochs: 60
   learning_rate: 0.001
   device: "cuda"
 
 generation:
   ratios:
-    lhs: 0.45       
+    lhs: 0.25        
+    random_sum: 0.20
     single: 0.10
     wall: 0.10      
     sparse: 0.15
