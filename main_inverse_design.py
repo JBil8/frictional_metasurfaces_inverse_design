@@ -20,9 +20,8 @@ def main():
                           if torch.cuda.is_available() else "cpu")
     n_asperities = cfg['physics']['n_asperities']
     # Initialize Early Stopping
-    early_stopping = EarlyStopping(
-        patience=15, verbose=True, path="checkpoint.pth", delta=1e-4)
-
+    early_stopping = early_stopping = EarlyStopping(
+        patience=15, verbose=True, delta=1e-4)
     # Start MLflow Run
     mlflow.set_experiment(cfg['experiment_name'])
 
@@ -233,9 +232,18 @@ def main():
 
                     print(f"Epoch {epoch}: Logged validation plot.")
 
-        print("Loading best model weights from checkpoint...")
-        model.load_state_dict(torch.load("checkpoint.pth"))
-
+        if early_stopping.early_stop:
+            print("Early stopping triggered!")
+        
+        # 1. Save the best model to disk ONCE
+        best_model_name = f"model_best_{cfg['data']['n_samples']}.pth"
+        early_stopping.save_to_disk(best_model_name)
+        
+        # 2. Load it into the model for testing
+        model.load_state_dict(early_stopping.best_state)
+        
+        # 3. Log artifact
+        mlflow.log_artifact(best_model_name)
         # Save the BEST model to MLflow as the final artifact
         torch.save(model.state_dict(), "model_best.pth")
         mlflow.log_artifact("model_best.pth")
