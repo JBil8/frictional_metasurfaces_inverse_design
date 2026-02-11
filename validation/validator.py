@@ -1,17 +1,5 @@
-from utils.seeding import set_seed
-from utils.normalization import get_theoretical_limits
-from utils.config import load_config
-from physics.differentiable import AxisymmetricContactLayer
-from ml_models.model_mlp import SurfaceInverseModel
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import matplotlib.pyplot as plt
-import numpy as np
 import sys
 import os
-from torch.utils.data import TensorDataset, random_split
-
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(current_dir, '..'))
 
@@ -22,6 +10,19 @@ try:
     from validation.targets import TargetGenerator
 except ImportError:
     from targets import TargetGenerator
+
+
+from utils.seeding import set_seed
+from utils.normalization import get_theoretical_limits
+from utils.config import load_config
+from physics.differentiable import AxisymmetricContactLayer
+from ml_models.model_mlp import SurfaceInverseModel
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import matplotlib.pyplot as plt
+import numpy as np
+from torch.utils.data import TensorDataset, random_split
 
 
 class UnifiedValidator:
@@ -440,7 +441,7 @@ class UnifiedValidator:
         ax1.plot(l_nn.cpu().numpy().flatten(), a_nn.cpu().numpy(
         ).flatten(), 'b--', lw=2, label="Zero-Shot (NN)")
         ax1.plot(l_ref.cpu().numpy().flatten(), a_ref.cpu(
-        ).numpy().flatten(), 'g:', lw=2, label="Refined (Opt)")
+        ).numpy().flatten(), 'r:', lw=4, label="Refined (Opt)")
 
         ax1.set_title(f"Contact Law: {title}")
         ax1.set_xlabel("Load [N]")
@@ -465,7 +466,7 @@ class UnifiedValidator:
             ax2.bar(indices, nn_h_sorted, width,
                     label='NN Pred', color='blue', alpha=0.7)
             ax2.bar(indices + width, ref_h_sorted, width,
-                    label='Refined', color='green', alpha=0.7)
+                    label='Refined', color='red', alpha=0.7)
         else:
             # Fallback sort
             sorted_idx = torch.argsort(h_pred[0])
@@ -476,7 +477,7 @@ class UnifiedValidator:
             ax2.bar(indices - width/2, nn_h_sorted, width,
                     label='NN Pred', color='blue', alpha=0.7)
             ax2.bar(indices + width/2, ref_h_sorted, width,
-                    label='Refined', color='green', alpha=0.7)
+                    label='Refined', color='red', alpha=0.7)
 
         ax2.set_title("Predicted Topography Structure")
         ax2.set_xlabel("Asperity Index")
@@ -495,7 +496,7 @@ class UnifiedValidator:
 if __name__ == "__main__":
     val = UnifiedValidator("config.yaml")
 
-    set_seed(42)  # For reproducibility of random samples and splits
+    set_seed(17)  # For reproducibility of random samples and splits
 
     # Run the rigorous Test Set Validation
     val.validate_on_test_set()

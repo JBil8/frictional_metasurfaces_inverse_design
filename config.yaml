@@ -13,6 +13,7 @@ data:
 
 model:
   hidden_dim: 1024
+  name: "model_best.pth"
 
 training:
   batch_size: 256

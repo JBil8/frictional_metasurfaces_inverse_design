@@ -24,7 +24,7 @@ def main():
     n_asperities = cfg['physics']['n_asperities']
     
     # Initialize Early Stopping
-    early_stopping = EarlyStopping(patience=15, verbose=True, delta=1e-4)
+    early_stopping = EarlyStopping(patience=25, verbose=True, delta=1e-4)
     
     # Start MLflow Run
     mlflow.set_experiment(cfg['experiment_name'])
@@ -221,7 +221,7 @@ def main():
             print("Early stopping triggered!")
         
         # Save Best Model
-        best_model_name = f"model_best_{cfg['data']['n_samples']}.pth"
+        best_model_name = cfg['model']['name'] 
         early_stopping.save_to_disk(best_model_name)
         model.load_state_dict(early_stopping.best_state) # Load best weights for test
         
