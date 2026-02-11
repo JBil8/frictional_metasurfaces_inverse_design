@@ -40,10 +40,10 @@ class UnifiedValidator:
         self.phys = AxisymmetricContactLayer(E_star=self.cfg['physics']['E_star']).to(self.device)
         self.model = SurfaceInverseModel(self.cfg).to(self.device)
         
-        model_path = "model_final.pth"
-        if not os.path.exists(model_path): model_path = "../model_final.pth"
-        print(f"[Validator] Loading model from {model_path}...")
-        self.model.load_state_dict(torch.load(model_path, map_location=self.device))
+        model_name = self.cfg['model']['name']
+        if not os.path.exists(model_name): model_name = "../" + model_name
+        print(f"[Validator] Loading model from {model_name}...")
+        self.model.load_state_dict(torch.load(model_name, map_location=self.device))
         self.model.eval()
         
         self.gen = TargetGenerator(self.phys, self.cfg, self.device)

@@ -15,8 +15,8 @@ model:
   hidden_dim: 1024
 
 training:
-  batch_size: 512
-  epochs: 60
+  batch_size: 256
+  epochs: 300
   learning_rate: 0.001
   device: "cuda"
 
@@ -24,7 +24,12 @@ generation:
   ratios:
     lhs: 0.25        
     random_sum: 0.20
-    single: 0.10
-    wall: 0.10      
+    single: 0.05
+    wall: 0.15      
     sparse: 0.15
     switch: 0.20
+
+scheduler:
+  type: "ReduceLROnPlateau"
+  patience: 5
+  factor: 0.5

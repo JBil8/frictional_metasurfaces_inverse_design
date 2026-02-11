@@ -62,7 +62,8 @@ def evaluate_model_performance():
     model = SurfaceInverseModel(cfg).to(device)
     
     print("Loading model weights...")
-    state_dict = torch.load("model_final.pth", map_location=device)
+    model_name = cfg['model']['name']
+    state_dict = torch.load(model_name, map_location=device)
     model.load_state_dict(state_dict)
     model.eval()
     

@@ -38,7 +38,8 @@ def main():
     saved_results = {}
 
     model = SurfaceInverseModel(cfg).to(device)
-    model.load_state_dict(torch.load("model_final.pth", map_location=device))
+    model_name = cfg['model']['name']
+    model.load_state_dict(torch.load(model_name, map_location=device))
     model.eval()
 
     # Create analytical engine for comparison

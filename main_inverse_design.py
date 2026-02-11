@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from utils.config import load_config
 from utils.plotting import plot_reconstruction
 from utils.normalization import get_theoretical_limits
+from utils.early_stopping import EarlyStopping
 from ml_models.model_mlp import SurfaceInverseModel
 from physics.differentiable import AxisymmetricContactLayer
 
@@ -17,11 +18,16 @@ def main():
     cfg = load_config("config.yaml")
     device = torch.device(cfg['training']['device']
                           if torch.cuda.is_available() else "cpu")
+    n_asperities = cfg['physics']['n_asperities']
+    # Initialize Early Stopping
+    early_stopping = EarlyStopping(
+        patience=15, verbose=True, path="checkpoint.pth", delta=1e-4)
 
     # Start MLflow Run
     mlflow.set_experiment(cfg['experiment_name'])
 
     with mlflow.start_run():
+
         # Log all parameters from config
         mlflow.log_params(cfg['physics'])
         mlflow.log_params(cfg['training'])
@@ -86,13 +92,22 @@ def main():
         optimizer = optim.Adam(
             model.parameters(), lr=cfg['training']['learning_rate'])
 
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode='min',
+            factor=cfg['training']['scheduler']['factor'],   # e.g., 0.5
+            patience=cfg['training']['scheduler']['patience'],  # e.g., 5
+            verbose=True
+        )
+
         # Training Loop
         print("Starting training...")
         epochs = cfg['training']['epochs']
 
         for epoch in range(epochs):
+            # --- PHASE 1: TRAINING ---
             model.train()
-            epoch_loss = 0.0  # Reset metric
+            train_loss_accum = 0.0
 
             # Dynamic Reg Decay
             progress = epoch / (epochs * 0.5)
@@ -101,63 +116,90 @@ def main():
 
             for bx, by in train_loader:
                 bx, by = bx.to(device), by.to(device)
+                optimizer.zero_grad()
 
-                optimizer.zero_grad()  # 1. Clear gradients
-
-                # Predict Parameters
                 p_n, p_h = model(bx)
 
-                # Reconstruct Curve (Physics Forward)
+                # Reconstruct
                 p_w = torch.ones_like(p_n) * 2.0 * cfg['physics']['radius']
                 batch_ind = indentations.repeat(bx.shape[0], 1)
-
                 rec_l, rec_a = physics(p_h, p_n, p_w, batch_ind)
 
-                # Normalize reconstruction
+                # Normalize reconstruction for loss
                 rec_l = rec_l / MAX_L
                 rec_a = rec_a / MAX_A
 
-                n_asperities = cfg['physics']['n_asperities']
-
-                # --- LOSS CALCULATION ---
-                # Updated Loss Block for Training
-                # criterion_L1 = nn.L1Loss()
+                # --- LOSS (Same as your code) ---
                 criterion_MSE = nn.MSELoss()
+                loss_log_l = criterion_MSE(
+                    torch.log1p(rec_l), torch.log1p(bx[:, 0, :]))
+                loss_log_a = criterion_MSE(
+                    torch.log1p(rec_a), torch.log1p(bx[:, 1, :]))
 
-                # 1. Physics Loss (L1 is sharper)
-                loss_log_l = criterion_MSE(torch.log1p(rec_l), torch.log1p(bx[:, 0, :]))
-                loss_log_a = criterion_MSE(torch.log1p(rec_a), torch.log1p(bx[:, 1, :]))
+                # Add Linear Loss (Recommended from previous discussion)
+                # loss_lin_l = criterion_MSE(rec_l, bx[:, 0, :])
+                # loss_lin_a = criterion_MSE(rec_a, bx[:, 1, :])
 
-                # 2. Slope Loss (MSE is still good here to enforce smoothness/continuity)
                 target_slope = bx[:, 0, 1:] - bx[:, 0, :-1]
                 recon_slope = rec_l[:, 1:] - rec_l[:, :-1]
                 loss_slope = criterion_MSE(recon_slope, target_slope)
 
-                # 3. Combine
-                # L1 loss values are usually smaller than MSE, so you might need to boost the weight slightly
-                loss_phys = (loss_log_l + loss_log_a) * 10.0 + \
-                            (loss_slope * 5.0)
+                loss_phys = (loss_log_l + loss_log_a) * \
+                    10.0 + (loss_slope * 5.0)
 
-                # 2. Parameter Loss (MSE is correct here)
-                loss_param = 5.0 * criterion_MSE(p_n, by[:, :n_asperities]) + \
-                            1.0 * criterion_MSE(p_h, by[:, n_asperities:])
+                loss_param = 5.0 * criterion_MSE(p_n, by[:, :cfg['physics']['n_asperities']]) + \
+                    1.0 * criterion_MSE(p_h,
+                                        by[:, cfg['physics']['n_asperities']:])
 
                 total_loss = loss_phys + (lambda_reg * loss_param)
 
-                #
-                total_loss.backward()  # 2. Calculate gradients
-                optimizer.step()       # 3. Update weights
+                total_loss.backward()
+                optimizer.step()
 
-                epoch_loss += total_loss.item()  # Accumulate for logging
+                train_loss_accum += total_loss.item()
 
-            # Log Avg Train Loss
-            avg_loss = epoch_loss / len(train_loader)
-            mlflow.log_metric("train_loss", avg_loss, step=epoch)
+            avg_train_loss = train_loss_accum / len(train_loader)
+            mlflow.log_metric("train_loss", avg_train_loss, step=epoch)
 
-            # Log Avg Train Loss
-            avg_loss = epoch_loss / len(train_loader)
-            mlflow.log_metric("train_loss", avg_loss, step=epoch)
+            # --- VALIDATION ---
+            model.eval()
+            val_loss_accum = 0.0
 
+            with torch.no_grad():
+                for vx, vy in val_loader:
+                    vx, vy = vx.to(device), vy.to(device)
+
+                    vn, vh = model(vx)
+
+                    # For Early Stopping, we usually monitor the PHYSICS loss (Reconstruction)
+                    # because that tells us if the model generalizes to unseen curves.
+                    vw = torch.ones_like(vn) * 2.0 * cfg['physics']['radius']
+                    batch_ind_val = indentations.repeat(vx.shape[0], 1)
+                    v_l, v_a = physics(vh, vn, vw, batch_ind_val)
+
+                    v_l /= MAX_L
+                    v_a /= MAX_A
+
+                    # Calculate Validation Loss (Keep it simple: MSE of curve)
+                    val_batch_loss = nn.MSELoss()(v_l, vx[:, 0, :]) + \
+                        nn.MSELoss()(v_a, vx[:, 1, :])
+                    val_loss_accum += val_batch_loss.item()
+
+            avg_val_loss = val_loss_accum / len(val_loader)
+            mlflow.log_metric("val_loss", avg_val_loss, step=epoch)
+
+            scheduler.step(avg_val_loss)
+            current_lr = optimizer.param_groups[0]['lr']
+            mlflow.log_metric("learning_rate", current_lr, step=epoch)
+            # --- EARLY STOPPING CHECK ---
+            early_stopping(avg_val_loss, model)
+
+            if early_stopping.early_stop:
+                print(f"Early stopping triggered at epoch {epoch}")
+                mlflow.log_metric("stopped_epoch", epoch)
+                break
+
+            # --- PHASE 4: VISUALIZATION (Optional, every 10 epochs) ---
             if epoch % 10 == 0:
                 model.eval()
                 with torch.no_grad():
@@ -192,10 +234,13 @@ def main():
 
                     print(f"Epoch {epoch}: Logged validation plot.")
 
-        # Save Model artifact
-        torch.save(model.state_dict(), "model_final.pth")
-        mlflow.log_artifact("model_final.pth")
-        print("Training complete. Check MLflow dashboard.")
+        print("Loading best model weights from checkpoint...")
+        model.load_state_dict(torch.load("checkpoint.pth"))
+
+        # Save the BEST model to MLflow as the final artifact
+        torch.save(model.state_dict(), "model_best.pth")
+        mlflow.log_artifact("model_best.pth")
+        print("Training complete")
 
         print("\nRunning Final Test on unseen data...")
         model.eval()
