@@ -121,14 +121,12 @@ def main():
 
                 # --- LOSS CALCULATION ---
                 # Updated Loss Block for Training
-                criterion_L1 = nn.L1Loss()
+                # criterion_L1 = nn.L1Loss()
                 criterion_MSE = nn.MSELoss()
 
                 # 1. Physics Loss (L1 is sharper)
-                loss_log_load = criterion_L1(
-                    torch.log1p(rec_l), torch.log1p(bx[:, 0, :]))
-                loss_log_area = criterion_L1(
-                    torch.log1p(rec_a), torch.log1p(bx[:, 1, :]))
+                loss_log_l = criterion_MSE(torch.log1p(rec_l), torch.log1p(bx[:, 0, :]))
+                loss_log_a = criterion_MSE(torch.log1p(rec_a), torch.log1p(bx[:, 1, :]))
 
                 # 2. Slope Loss (MSE is still good here to enforce smoothness/continuity)
                 target_slope = bx[:, 0, 1:] - bx[:, 0, :-1]
@@ -137,12 +135,12 @@ def main():
 
                 # 3. Combine
                 # L1 loss values are usually smaller than MSE, so you might need to boost the weight slightly
-                loss_phys = (loss_log_load + loss_log_area) * \
-                    20.0 + (loss_slope * 10.0)
+                loss_phys = (loss_log_l + loss_log_a) * 10.0 + \
+                            (loss_slope * 5.0)
 
-                # 4. Parameters (Keep MSE for parameters)
+                # 2. Parameter Loss (MSE is correct here)
                 loss_param = 5.0 * criterion_MSE(p_n, by[:, :n_asperities]) + \
-                    1.0 * criterion_MSE(p_h, by[:, n_asperities:])
+                            1.0 * criterion_MSE(p_h, by[:, n_asperities:])
 
                 total_loss = loss_phys + (lambda_reg * loss_param)
 
