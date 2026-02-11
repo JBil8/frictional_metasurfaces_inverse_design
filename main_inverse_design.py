@@ -72,9 +72,8 @@ def main():
         # Shuffle Train to break correlations
         train_loader = DataLoader(
             train_ds, batch_size=cfg['training']['batch_size'], shuffle=True)
-        # Val/Test don't need shuffle, but batch_size=1 helps for detailed analysis
-        val_loader = DataLoader(val_ds, batch_size=1)
-        test_loader = DataLoader(test_ds, batch_size=1)
+        val_loader = DataLoader(val_ds, batch_size=2048)
+        test_loader = DataLoader(test_ds, batch_size=2048)
 
         # Initialize Components
         model = SurfaceInverseModel(cfg).to(device)
