@@ -1,6 +1,7 @@
 import torch
 import sys
 import os
+import numpy as np
 
 # Adjust path to import from parent directories
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -114,44 +115,76 @@ class TargetGenerator:
         
         return target_load, target_area, gt_n, gt_h, f"Dataset: {category.capitalize()} (#{offset})"
 
-    def get_linear_coulomb(self):
-        """
-        Generates a Linear relationship: Area = k * Load.
-        FIX: Use realistic loads for rough surfaces (e.g., 5% of max capacity).
-        """
-        # 1. Define bounds - Rough surfaces are SOFT!
-        # Use 5% of max load, not 70%.
-        scale_factor = 0.5 
-        target_load = self.l_max * scale_factor
-        
-        # 2. Linear Relation
-        # Slope: A rough surface might reach 5% of max area at 5% of max load
-        max_load_val = target_load.max()
-        
-        # A_max is usually ~ P_max^(2/3). 
-        # We want a slope that stays well below the "Wall limit"
-        slope = (self.a_max.max() * 0.5) / max_load_val
-        target_area = target_load * slope
-        
-        return target_load, target_area, "Linear (Coulomb) Contact"
+    def get_consistent_linear_coulomb(self):
+            """
+            Generates a Linear Target (A ~ P) by simulating a PHYSICALLY VALID
+            Exponential Distribution of heights (Greenwood-Williamson).
+            """
+            # 1. Generate Parameters explicitly for the "Unseen" Physics
+            # Exponential distribution = Linear Contact Law
+            n = torch.ones(1, self.n_asp).to(self.device) * 2.0 # Spheres (Hertz)
+            
+            # Exponential heights (The key to linearity)
+            # We construct this manually to ensure it's "perfectly" exponential
+            # independent of the random generator
+            h_dist = torch.distributions.Exponential(rate=5.0) 
+            h_vals = h_dist.sample((1, self.n_asp)).to(self.device)
+            
+            # Scale to physical range
+            h = h_vals * (0.5 * self.max_d)
+            h, _ = torch.sort(h, dim=1)
+            h = h - h[:, 0:1] # Normalize
+            
+            # 2. SOLVE PHYSICS to get the True Consistent Curve
+            with torch.no_grad():
+                target_load, target_area = self.phys(h, n, self.t_w, self.indentations)
+                
+            return target_load, target_area, "Linear (GW Physics)"
 
-    def get_saturating_exponential(self):
+    def get_consistent_saturating(self):
         """
-        Generates a surface that 'bottoms out' smoothly.
+        Generates a True Saturating curve (Roughness Flattening).
+        Strategy: Use 'Flat Punches' (n=8) with a BOUNDED height distribution.
         """
-        # Rough surfaces saturate at lower loads
-        scale_factor = 0.25
-        target_load = self.l_max * scale_factor
+        # 1. Maximize Exponent (Flat Punch behavior)
+        # For a flat punch, Area is constant with depth (A ~ d^0), causing perfect saturation.
+        n = torch.ones(1, self.n_asp).to(self.device) * 7.0 
         
-        norm_P = target_load / target_load.max()
+        # 2. Bounded Height Distribution (Uniform)
+        # Gaussian has tails (infinite heights). Uniform has a hard cutoff.
+        # We confine all asperities to the first 25% of the max depth.
+        # Once indentation > 0.25, Area will effectively stop growing.
+        h_vals = torch.rand(1, self.n_asp).to(self.device)
+        h = h_vals * (0.25 * self.max_d) 
         
-        # Saturate at a fraction of max area corresponding to this load scale
-        A_plateau = self.a_max.max() * 0.08
+        # Sort & Normalize
+        h, _ = torch.sort(h, dim=1)
+        h = h - h[:, 0:1]
         
-        k = 5.0 
-        target_area = A_plateau * (1.0 - torch.exp(-k * norm_P))
+        # Solve Physics
+        with torch.no_grad():
+            target_load, target_area = self.phys(h, n, self.t_w, self.indentations)
+            
+        return target_load, target_area, "Saturating (Bounded Flat Punches)"
+
+    def get_consistent_bilinear(self):
+        """
+        Generates a Bilinear Target by mixing two distinct height groups.
+        """
+        n = torch.ones(1, self.n_asp).to(self.device) * 3.0
         
-        return target_load, target_area, "Saturating (Roughness Flattening)"
+        # Group 1: At 0 (Touching)
+        h1 = torch.zeros(1, 8).to(self.device)
+        # Group 2: At Gap (Delayed)
+        h2 = torch.ones(1, 8).to(self.device) * (0.4 * self.max_d)
+        
+        h = torch.cat([h1, h2], dim=1)
+        
+        # Solve Physics
+        with torch.no_grad():
+            target_load, target_area = self.phys(h, n, self.t_w, self.indentations)
+            
+        return target_load, target_area, "Bilinear (Gap Physics)"
 
     def get_bilinear_transition(self):
         """

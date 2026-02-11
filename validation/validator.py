@@ -1,4 +1,6 @@
 import torch
+import torch.nn as nn
+import torch.optim as optim
 import matplotlib.pyplot as plt
 import numpy as np
 import sys
@@ -74,100 +76,210 @@ class UnifiedValidator:
                     
         return categorized_test_indices
 
-    def validate_on_test_set(self):
+    def validate_on_test_set(self, refine=True):
         """
-        Plots one random sample from the Test Set for each category.
-        Guaranteed to be data the network NEVER saw during training.
+        Plots Test Set samples with optional Refinement.
+        Visualizes: Target vs Zero-Shot NN vs Refined.
         """
         test_buckets = self.get_test_set_indices_by_category()
         
         for category, indices in test_buckets.items():
-            if len(indices) == 0:
-                print(f"Warning: No test samples found for {category}")
-                continue
-                
-            # Pick one random index from the Test bucket
-            random_test_idx = np.random.choice(indices)
-            print(f"Validating {category.upper()} on Test Sample #{random_test_idx}...")
+            if len(indices) == 0: continue
             
-            # Fetch that specific sample
-            t_l, t_a, gt_n, gt_h, title = self.gen.get_custom_sample(random_test_idx, category)
+            # Pick random sample
+            idx = np.random.choice(indices)
+            print(f"Validating {category.upper()} on Test Sample #{idx}...")
             
-            # Predict
+            # Get Data
+            t_l, t_a, gt_n, gt_h, title = self.gen.get_custom_sample(idx, category)
+            
+            # 1. Zero-Shot Prediction (NN)
             prepend_val = torch.zeros(1, 1).to(self.device)
             raw_stiff = torch.diff(t_l, dim=1, prepend=prepend_val)
-            
-            nn_input = torch.cat([
-                t_l / self.MAX_L, 
-                t_a / self.MAX_A, 
-                raw_stiff / self.MAX_S
-            ], dim=0).unsqueeze(0)
+            nn_input = torch.cat([t_l/self.MAX_L, t_a/self.MAX_A, raw_stiff/self.MAX_S], dim=0).unsqueeze(0)
             
             with torch.no_grad():
                 n_pred, h_pred = self.model(nn_input)
                 l_nn, a_nn = self.phys(h_pred, n_pred, self.gen.t_w, self.gen.indentations)
             
-            # Plot
-            self.plot_comparison(t_l, t_a, gt_n, gt_h, l_nn, a_nn, n_pred, h_pred, f"Test Set: {category} (#{random_test_idx})")
+            # 2. Refinement (Optional)
+            if refine:
+                # Use the standard indentation profile for test set samples
+                n_ref, h_ref, l_ref, a_ref = self.refine_prediction(t_l, t_a, n_pred, h_pred, self.gen.indentations)
+                
+                # Plot with THREE curves: Target, NN, Refined
+                self.plot_triple_comparison(t_l, t_a, gt_n, gt_h, 
+                                          l_nn, a_nn, n_pred, h_pred,
+                                          l_ref, a_ref, n_ref, h_ref,
+                                          f"Test: {category} (#{idx})")
+            else:
+                self.plot_comparison(t_l, t_a, gt_n, gt_h, l_nn, a_nn, n_pred, h_pred, f"Test: {category} (#{idx})")
 
-    def validate_designed(self, target_type="linear"):
+    def refine_prediction(self, target_load, target_area, n_init, h_init, indent_profile, steps=50):
         """
-        Validates on a purely synthetic target curve generated on the fly.
-        Useful for testing "Unseen Physics" (Linear, Saturating, etc.).
+        Refinement using Normalized Loss and explicit Indentation Profile.
+        """
+        print(f"  > Refinement: Optimizing with correct indentation profile...")
+        
+        n_opt = n_init.clone().detach().requires_grad_(True)
+        h_opt = h_init.clone().detach().requires_grad_(True)
+        
+        optimizer = optim.LBFGS([n_opt, h_opt], lr=0.5, max_iter=20, line_search_fn='strong_wolfe')
+        criterion_mse = nn.MSELoss()
+        
+        # Normalization factors to balance Load vs Area optimization
+        # (Add epsilon to avoid division by zero)
+        scale_l = target_load.abs().mean().item() + 1e-6
+        scale_a = target_area.abs().mean().item() + 1e-6
+        
+        for i in range(steps):
+            def closure():
+                optimizer.zero_grad()
+                
+                # Sort heights (Topology constraint)
+                h_sorted, _ = torch.sort(h_opt, dim=1)
+                h_sorted = h_sorted - h_sorted[:, 0:1]
+                
+                # Soft constraints to keep physics stable without hard clamping
+                # We use softplus for heights to keep them positive-ish
+                # We simply let n float, but the physics engine handles n < 1 gracefully usually?
+                # Actually, let's just stick to the sorted h.
+                
+                l_pred, a_pred = self.phys(h_sorted, n_opt, self.gen.t_w, indent_profile)
+                
+                # NORMALIZED LOSS
+                loss_l = criterion_mse(l_pred, target_load) / (scale_l**2)
+                loss_a = criterion_mse(a_pred, target_area) / (scale_a**2)
+                
+                loss = loss_l + loss_a
+                loss.backward()
+                return loss
+
+            try:
+                optimizer.step(closure)
+            except Exception as e:
+                print(f"    [Warning] Optimization step failed: {e}")
+                break
+            
+        with torch.no_grad():
+            h_final, _ = torch.sort(h_opt, dim=1)
+            h_final = h_final - h_final[:, 0:1]
+            n_final = n_opt
+            l_final, a_final = self.phys(h_final, n_final, self.gen.t_w, indent_profile)
+            
+        return n_final, h_final, l_final, a_final
+
+    def validate_designed(self, target_type="linear", refine=False):
+        """
+        Validates on synthetic targets with AUTOMATIC indentation scaling.
         """
         print(f"[Validator] Generating fresh synthetic target: {target_type}...")
         
-        # 1. Generate the Target Curve (Load vs Area)
-        # Note: These targets do NOT have ground truth parameters (n, h)
+        # 1. Generate Target
         if target_type == "linear":
-            t_l, t_a, title = self.gen.get_linear_coulomb()
+            t_l, t_a, title = self.gen.get_consistent_linear_coulomb()
         elif target_type == "saturate":
-            t_l, t_a, title = self.gen.get_saturating_exponential()
+            t_l, t_a, title = self.gen.get_consistent_saturating()
         elif target_type == "bilinear":
-            t_l, t_a, title = self.gen.get_bilinear_transition()
-        elif target_type == "power":
-            t_l, t_a, title = self.gen.get_power_law(exponent=1.5)
-        elif target_type == "switch":
-            t_l, t_a, title = self.gen.get_friction_switch()
-        elif target_type == "step":
-            t_l, t_a, title = self.gen.get_step_contact()
-        else:
-            raise ValueError(f"Unknown target type: {target_type}")
+            t_l, t_a, title = self.gen.get_consistent_bilinear()
 
-        # 2. Prepare Input for NN
-        # Calculate stiffness
+        # 2. NN Prediction
         prepend_val = torch.zeros(1, 1).to(self.device)
         raw_stiff = torch.diff(t_l, dim=1, prepend=prepend_val)
+        nn_input = torch.cat([t_l/self.MAX_L, t_a/self.MAX_A, raw_stiff/self.MAX_S], dim=0).unsqueeze(0)
         
-        # Normalize
-        nn_input = torch.cat([
-            t_l / self.MAX_L, 
-            t_a / self.MAX_A, 
-            raw_stiff / self.MAX_S
-        ], dim=0).unsqueeze(0)
-        
-        # 3. NN Prediction
         with torch.no_grad():
             n_pred, h_pred = self.model(nn_input)
             
-            # Reconstruct the curve from the predicted parameters
-            l_nn, a_nn = self.phys(h_pred, n_pred, self.gen.t_w, self.gen.indentations)
+            # 3. Dynamic Indentation Check
+            # Check stiffness of prediction vs target using standard indent
+            l_std, _ = self.phys(h_pred, n_pred, self.gen.t_w, self.gen.indentations)
+            current_max = l_std.max().item()
+            target_max = t_l.max().item()
             
-        # 4. Plot
-        # We pass None for gt_n and gt_h because these synthetic curves 
-        # don't have a "true" surface topography behind them.
-        self.plot_comparison(t_l, t_a, None, None, l_nn, a_nn, n_pred, h_pred, f"Unseen: {title}")
+            # Default to standard indentation
+            active_ind = self.gen.indentations
+            
+            if current_max < target_max:
+                print(f"  > Extending indentation (Current: {current_max:.2f}N < Target: {target_max:.2f}N)")
+                
+                # Calculate required depth ratio
+                ratio = target_max / (current_max + 1e-6)
+                new_max_d = self.gen.max_d * ratio * 1.1 # +10% buffer
+                
+                # CRITICAL FIX: Keep the SAME number of steps (500)
+                # This ensures the array shapes match for the optimizer!
+                active_ind = torch.linspace(0, new_max_d, self.gen.n_steps).unsqueeze(0).to(self.device)
+                
+                # Re-calculate NN prediction on this new grid
+                l_nn, a_nn = self.phys(h_pred, n_pred, self.gen.t_w, active_ind)
+            else:
+                l_nn, a_nn = l_std, _
 
+        # 4. Refinement
+        if refine:
+            # Pass the CORRECT indentation profile (active_ind) to the optimizer
+            n_ref, h_ref, l_ref, a_ref = self.refine_prediction(t_l, t_a, n_pred, h_pred, active_ind)
+            self.plot_triple_comparison(t_l, t_a, None, None, l_nn, a_nn, n_pred, h_pred, l_ref, a_ref, n_ref, h_ref, f"Refined: {title}")
+        else:
+            self.plot_comparison(t_l, t_a, None, None, l_nn, a_nn, n_pred, h_pred, f"Unseen: {title}")
+    
     def plot_comparison(self, t_l, t_a, gt_n, gt_h, l_nn, a_nn, n_pred, h_pred, title):
+        fig = plt.figure(figsize=(14, 6))
+        
+        # Panel 1: Physics
+        ax1 = plt.subplot(1, 2, 1)
+        ax1.plot(t_l.cpu().numpy().flatten(), t_a.cpu().numpy().flatten(), 'k-', lw=3, label="Target")
+        ax1.plot(l_nn.cpu().numpy().flatten(), a_nn.cpu().numpy().flatten(), 'b--', lw=2, label="Prediction")
+        ax1.set_title(f"Contact Law: {title}")
+        ax1.set_xlabel("Load [N]")
+        ax1.set_ylabel("Area [m²]")
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # Panel 2: Parameters
+        ax2 = plt.subplot(1, 2, 2)
+        width = 0.35
+        
+        # Sort predictions
+        sorted_idx = torch.argsort(h_pred[0])
+        nn_h_sorted = h_pred[0][sorted_idx].cpu().detach().numpy()
+        indices = np.arange(len(nn_h_sorted))
+        
+        if gt_h is not None:
+             # If GT exists, align sorting
+             gt_sorted_idx = torch.argsort(gt_h[0])
+             gt_h_sorted = gt_h[0][gt_sorted_idx].cpu().numpy()
+             ax2.bar(indices - width/2, gt_h_sorted, width, label='Ground Truth', color='black', alpha=0.7)
+             ax2.bar(indices + width/2, nn_h_sorted, width, label='Pred', color='blue', alpha=0.7)
+        else:
+             ax2.bar(indices, nn_h_sorted, width, label='Pred (Inferred)', color='blue', alpha=0.7)
+             
+        ax2.set_title("Predicted Topography Structure")
+        ax2.set_xlabel("Asperity Index (Sorted)")
+        ax2.legend()
+        
+        plt.tight_layout()
+        os.makedirs("plots", exist_ok=True)
+        sname = title.split(":")[1].strip().split(" ")[0].lower() if ":" in title else title.split(" ")[0].lower()
+        save_path = f"plots/val_{sname}.png"
+        plt.savefig(save_path, dpi=150)
+        print(f"[Validator] Saved plot to {save_path}")
+        plt.close()
+
+    def plot_triple_comparison(self, t_l, t_a, gt_n, gt_h, 
+                             l_nn, a_nn, n_pred, h_pred,
+                             l_ref, a_ref, n_ref, h_ref, title):
         """
-        Updated to handle cases where Ground Truth parameters (gt_n, gt_h) are missing.
+        Plots Target vs NN vs Refined.
         """
         fig = plt.figure(figsize=(14, 6))
         
-        # --- Panel 1: Physics (Load vs Area) ---
+        # Panel 1: Physics Curves
         ax1 = plt.subplot(1, 2, 1)
-        ax1.plot(t_l.cpu().numpy().flatten(), t_a.cpu().numpy().flatten(), 'k-', lw=3, label="Target (Synthetic)")
-        ax1.plot(l_nn.cpu().numpy().flatten(), a_nn.cpu().numpy().flatten(), 'b--', lw=2, label="NN Prediction")
+        ax1.plot(t_l.cpu().numpy().flatten(), t_a.cpu().numpy().flatten(), 'k-', lw=3, label="Target (GT)")
+        ax1.plot(l_nn.cpu().numpy().flatten(), a_nn.cpu().numpy().flatten(), 'b--', lw=2, label="Zero-Shot (NN)")
+        ax1.plot(l_ref.cpu().numpy().flatten(), a_ref.cpu().numpy().flatten(), 'g:', lw=2, label="Refined (Opt)")
         
         ax1.set_title(f"Contact Law: {title}")
         ax1.set_xlabel("Load [N]")
@@ -175,39 +287,39 @@ class UnifiedValidator:
         ax1.legend()
         ax1.grid(True, alpha=0.3)
         
-        # --- Panel 2: Parameters (Bar Chart) ---
+        # Panel 2: Parameters (Structure)
         ax2 = plt.subplot(1, 2, 2)
-        width = 0.35
+        width = 0.25
         
-        # If we have Ground Truth (Real Data), plot comparison
+        # Sort by GT heights if available, else by prediction
         if gt_h is not None:
             sorted_idx = torch.argsort(gt_h[0])
             gt_h_sorted = gt_h[0][sorted_idx].cpu().numpy()
             nn_h_sorted = h_pred[0][sorted_idx].cpu().detach().numpy()
+            ref_h_sorted = h_ref[0][sorted_idx].cpu().detach().numpy()
             indices = np.arange(len(gt_h_sorted))
             
-            ax2.bar(indices - width/2, gt_h_sorted, width, label='Ground Truth', color='black', alpha=0.7)
-            ax2.bar(indices + width/2, nn_h_sorted, width, label='NN Pred', color='blue', alpha=0.7)
-        
-        # If we DO NOT have Ground Truth (Synthetic Target), just plot the prediction
+            ax2.bar(indices - width, gt_h_sorted, width, label='Ground Truth', color='black', alpha=0.7)
+            ax2.bar(indices, nn_h_sorted, width, label='NN Pred', color='blue', alpha=0.7)
+            ax2.bar(indices + width, ref_h_sorted, width, label='Refined', color='green', alpha=0.7)
         else:
-            # Sort by predicted height for readability
+            # Fallback sort
             sorted_idx = torch.argsort(h_pred[0])
             nn_h_sorted = h_pred[0][sorted_idx].cpu().detach().numpy()
+            ref_h_sorted = h_ref[0][sorted_idx].cpu().detach().numpy()
             indices = np.arange(len(nn_h_sorted))
             
-            ax2.bar(indices, nn_h_sorted, width, label='NN Pred (Inferred Structure)', color='blue', alpha=0.7)
-            ax2.text(0.5, 0.9, "No GT: Synthetic Target", transform=ax2.transAxes, ha='center')
+            ax2.bar(indices - width/2, nn_h_sorted, width, label='NN Pred', color='blue', alpha=0.7)
+            ax2.bar(indices + width/2, ref_h_sorted, width, label='Refined', color='green', alpha=0.7)
 
         ax2.set_title("Predicted Topography Structure")
-        ax2.set_xlabel("Asperity Index (Sorted)")
-        ax2.set_ylabel("Height Offset h [m]")
+        ax2.set_xlabel("Asperity Index")
         ax2.legend()
         
         plt.tight_layout()
-        os.makedirs("plots", exist_ok=True)
-        sname = title.split(":")[1].strip().split(" ")[0].lower() if ":" in title else title.split(" ")[0].lower()
-        save_path = f"plots/val_unseen_{sname}.png"
+        os.makedirs("plots_test", exist_ok=True)
+        sname = title.split(":")[1].strip().split(" ")[0].lower() if ":" in title else "sample"
+        save_path = f"plots_test/val_test_{sname}.png"
         plt.savefig(save_path, dpi=150)
         print(f"[Validator] Saved plot to {save_path}")
         plt.close()
@@ -216,11 +328,7 @@ if __name__ == "__main__":
     val = UnifiedValidator("config.yaml")
     
     # Run the rigorous Test Set Validation
-    val.validate_on_test_set()
-    val.validate_designed(target_type="linear")
-
-    # Test if it can simulate "Bottoming out"
-    val.validate_designed(target_type="saturate")
-
-    # Test the transition
-    val.validate_designed(target_type="bilinear")
+    # val.validate_on_test_set()
+    # val.validate_designed(target_type="linear", refine=True)
+    val.validate_designed(target_type="saturate", refine=True)
+    # val.validate_designed(target_type="bilinear", refine=True)

@@ -29,46 +29,54 @@ class SurfaceGenerator:
         print(f"  > Generating {n_samples} Canonical Singles (Basis Functions)...")
         n, h = self.get_base_batch(n_samples)
         
-        # Set all heights to MAX (infinity)
+        # Set all heights to MAX so they do not touch
         h.fill_(self.max_delta)
         
-        # Set the FIRST asperity to 0.0 (Active)
+        # Set the first asperity to 0.0 (Active)
         h[:, 0] = 0.0
         
         # Sweep exponents from 1.0 to 8.0 across the batch
-        # This teaches the network: "What does a single n=1 look like? What does a single n=8 look like?"
         n_vals = torch.linspace(1.0, 8.0, n_samples).unsqueeze(1)
         n = n_vals.repeat(1, self.n_asp)
         
-        # since we sort heights later, Index 0 will always be the active one.
         return n, h
 
     def generate_canonical_walls(self, n_samples):
         """
-        The "Stiffest Limits".
-        generates a mix of Perfect Walls (h=0) and Quasi-Walls (h ~ epsilon).
-        This helps the NN understand the transition to the limit.
+        Generates Stiff Limits (n=8).
+        Includes:
+        1. Solid Block (All h=0)
+        2. Quasi-Block (h ~ epsilon)
+        3. Partial Walls (Some h=0, some h=infinity) -> Teaches 'Local' Wall behavior
         """
-        print(f"  > Generating {n_samples} Canonical & Quasi-Walls...")
+        print(f"  > Generating {n_samples} Canonical Walls ...")
         n, h = self.get_base_batch(n_samples)
         
-        # 1. Sweep Exponents (1.0 to 8.0)
-        n_vals = torch.linspace(1.0, 8.0, n_samples).unsqueeze(1)
-        n = n_vals.repeat(1, self.n_asp)
+        # We vary slightly [7.0, 8.0] to make it robust
+        n = 1.0 + torch.rand(n_samples, self.n_asp) * 1.0
         
-        # 2. Perfect Walls (First 50%)
-        # These are the theoretical maximums
-        split_idx = n_samples // 2
-        h[:split_idx].fill_(0.0)
-
-        roughness_scale = 0.02 * self.max_delta
+        # 2. Logic Split
+        for i in range(n_samples):
+            mode = np.random.rand()
+            
+            if mode < 0.5:
+                # All heights are roughly 0
+                roughness = torch.rand(self.n_asp) * (0.01 * self.max_delta)
+                h[i] = roughness
+                
+            else:
+                # This teaches: "n=8 matters even if only 3 asperities touch."
+                n_active = np.random.randint(1, self.n_asp) # 1 to 15 active
+                
+                # Active: At 0
+                h_active = torch.rand(n_active) * (0.01 * self.max_delta)
+                # Inactive: Far away
+                h_inactive = (0.5 + 0.5 * torch.rand(self.n_asp - n_active)) * self.max_delta
+                
+                combined = torch.cat([h_active, h_inactive])
+                h[i] = combined[torch.randperm(self.n_asp)]
         
-        # Generate random tiny heights
-        micro_noise = torch.rand(n_samples - split_idx, self.n_asp) * roughness_scale
-        h[split_idx:] = micro_noise
-        
-        # 4. Sort and Normalize (Critical)
-        # Even Quasi-walls must follow the sorted convention
+        # Sort & Normalize
         h, _ = torch.sort(h, dim=1)
         h = h - h[:, 0:1]
         
@@ -76,82 +84,156 @@ class SurfaceGenerator:
 
     def generate_sparse(self, n_samples):
         """
-        Mostly air. 1 to 3 asperities active.
+        Sparse / Sequential Contacts.
+        Focuses on distinct, isolated contact events to teach the NN 
+        how to resolve "Kinks" in the load curve.
         """
-        print(f"  > Generating {n_samples} Sparse samples...")
+        print(f"  > Generating {n_samples} Sparse (Sequential) samples...")
         n, h = self.get_base_batch(n_samples)
+        
+        # Exponents can be anything
         n = 1.0 + torch.rand(n_samples, self.n_asp) * 7.0
         
         for i in range(n_samples):
-            # Reduced count: Strictly 1 to 3 active
-            n_active = self.n_asp // 4
+            # STRICTLY LOW COUNT: 2 to 4 active.
+            # If we have too many, it becomes a "Random Sum" surface.
+            n_active = np.random.randint(2, 5) 
             
-            h_active = torch.rand(n_active) * (0.05 *self.max_delta) # Very tight contact
-            h_inactive = self.max_delta * 1.1 * torch.ones(self.n_asp - n_active)        # (0.5 + 0.5 * torch.rand(self.n_asp - n_active))
+            # SPREAD OUT: Place them randomly across the gap
+            # This ensures they contact one-by-one (Sequential)
+            h_active = torch.rand(n_active) * (0.8 * self.max_delta)
+            
+            # Inactive: Pushed away
+            h_inactive = (1.0 + 0.2 * torch.rand(self.n_asp - n_active)) * self.max_delta
             
             combined = torch.cat([h_active, h_inactive])
             h[i] = combined[torch.randperm(self.n_asp)]
+        
+        # Sort & Normalize
+        h, _ = torch.sort(h, dim=1)
+        h = h - h[:, 0:1]
+
         return n, h
 
-    def generate_bimodal(self, n_samples):
+    def generate_multistep(self, n_samples):
         """
-        Friction Switches.
-        Tweaked to allow '1 vs 15' splits (Extreme Slip).
+        Generates 'Staircase' surfaces with multiple discrete height levels.
+        (Generalization of the Bimodal Switch).
+        
+        Logic:
+        1. Determine how many steps (levels) to have.
+        2. Assign asperities to these levels.
+        3. Add small noise so they aren't mathematically perfect (robustness).
         """
-        print(f"  > Generating {n_samples} Bimodal (Switch) samples...")
+        print(f"  > Generating {n_samples} Multi-Step (Staircase) samples...")
         n, h = self.get_base_batch(n_samples)
+        
+        # Exponents: Mix of Walls (flat) and Spheres (curved) to make steps interesting
         n = 1.0 + torch.rand(n_samples, self.n_asp) * 7.0
         
         for i in range(n_samples):
-            gap = np.random.uniform(0.2, 0.8) * self.max_delta
+            # 1. How many levels? (User's heuristic: n // 4)
+            # Ensure at least 2 levels (otherwise it's just a flat wall)
+            max_levels = max(2, self.n_asp // 4)
             
-            # CHANGED: Allow split_idx to be 1 (Extreme case: 1 asperity carries load, then 15 hit)
-            split_idx = np.random.randint(1, self.n_asp - 1)
+            # Randomly pick between 2 and max_levels
+            n_levels = np.random.randint(2, max_levels + 1)
             
-            g1 = torch.normal(0, 0.01 * self.max_delta, size=(split_idx,))
-            g2 = torch.normal(gap, 0.01 * self.max_delta, size=(self.n_asp - split_idx,))
+            # 2. Pick the Heights for these levels
+            # We pick random points in [0, max_delta] and sort them.
+            # The first level is forced to 0 (physics normalization).
+            level_heights = torch.rand(n_levels) * (0.9 * self.max_delta)
+            level_heights[:1] = 0.0 
+            level_heights, _ = torch.sort(level_heights)
             
-            combined = torch.cat([g1, g2])
-            h[i] = torch.clamp(combined, 0, self.max_delta)
-            
-        return n, h
-    
-    # ... (Previous methods: get_base_batch, generate_canonical_singles, etc.) ...
+            # 3. Distribute Asperities across these levels
+            # We need to split 'n_asp' items into 'n_levels' groups.
+            # We do this by picking (n_levels - 1) random "cut points".
+            if n_levels < self.n_asp:
+                # Pick unique cut points
+                cuts = np.sort(np.random.choice(range(1, self.n_asp), n_levels - 1, replace=False))
+                bounds = np.concatenate(([0], cuts, [self.n_asp]))
+            else:
+                # Fallback if n_asp is tiny
+                bounds = np.arange(n_levels + 1)
 
+            # 4. Construct the Surface
+            combined_h = []
+            for j in range(n_levels):
+                count = bounds[j+1] - bounds[j]
+                if count > 0:
+                    # Base height + Micro-roughness (Jitter)
+                    # We add jitter so the network doesn't overfit to "perfect" steps
+                    jitter = torch.randn(count) * (0.01 * self.max_delta)
+                    group_h = level_heights[j] + jitter
+                    combined_h.append(group_h)
+            
+            # Concatenate and clamp
+            if combined_h:
+                h_seq = torch.cat(combined_h)
+                # Pad if calculation was slightly off (safety)
+                if len(h_seq) < self.n_asp:
+                    padding = torch.ones(self.n_asp - len(h_seq)) * self.max_delta
+                    h_seq = torch.cat([h_seq, padding])
+                
+                h[i] = torch.clamp(h_seq, 0, self.max_delta)
+
+        # Final Sort & Normalize (Crucial for invariance)
+        h, _ = torch.sort(h, dim=1)
+        h = h - h[:, 0:1]
+        
+        return n, h
+ 
     def generate_random_sums(self, n_samples):
         """
-        Teaches the NN the 'Principle of Superposition'.
-        Instead of picking heights from a fixed distribution, we explicitly sum
-        random numbers of asperities. This creates a mix of Uniform, Gaussian, 
-        and Exponential-like surfaces naturally.
+        Teaches the NN the 'Principle of Superposition' and 'Continuous Heights'.
+        1. Vary n_active from 1 to N.
+        2. Place active asperities continuously across [0, max_delta], not just at 0.
         """
-        print(f"  > Generating {n_samples} Random Sums (Superposition)...")
+        print(f"  > Generating {n_samples} Random Sums ...")
         n, h = self.get_base_batch(n_samples)
         
-        # Random Exponents for everyone (1.0 to 8.0)
+        # Random Exponents (1.0 to 8.0)
         n = 1.0 + torch.rand(n_samples, self.n_asp) * 7.0
         
         for i in range(n_samples):
-            # 1. How many asperities are active? (1 to N)
+            # complexity (4-12) which is rare in LHS
             n_active = np.random.randint(1, self.n_asp + 1)
             
-            # 2. Pick heights for active ones
-            # Mix of Uniform (standard) and Clustered (exponential-ish)
-            if np.random.rand() > 0.5:
-                active_h = torch.rand(n_active) * self.max_delta
-            else:
-                # Clustered near 0 with long tail
-                active_h = torch.abs(torch.randn(n_active)) * (0.3 * self.max_delta)
+            # 2. Pick Heights: The Generalization Key
+            mode = np.random.rand()
             
-            # 3. Inactive ones pushed far away
-            inactive_h = torch.ones(self.n_asp - n_active) * self.max_delta * 1.5
+            if mode < 0.33:
+                # Mode A: Uniform Random (The "LHS" look, but simpler)
+                # Active are anywhere in [0, max_delta]
+                active_h = torch.rand(n_active) * self.max_delta
+                
+            elif mode < 0.66:
+                # Mode B: Gaussian Cluster (The "Wall/Switch" look)
+                # Clustered around a random mean depth
+                mean_depth = np.random.rand() * self.max_delta
+                sigma = 0.1 * self.max_delta
+                active_h = torch.normal(mean_depth, sigma, size=(n_active,))
+                
+            else:
+                # Mode C: Exponential-ish (The "Linear/Coulomb" look) [NEW]
+                # This explicitly creates the "Long Tail" the network was missing.
+                # Many at 0, fewer at 0.2, very few at 0.5...
+                raw_exp = torch.distributions.Exponential(rate=3.0).sample((n_active,))
+                # Scale to physical range
+                active_h = raw_exp * (0.3 * self.max_delta)
+            
+            # 3. Clip to stay physical
+            active_h = torch.clamp(active_h, 0, self.max_delta)
+            
+            # 4. Inactive ones pushed to infinity
+            # (But vary "infinity" slightly so the network doesn't memorize a specific value)
+            inactive_h = (1.2 + 0.5 * torch.rand(self.n_asp - n_active)) * self.max_delta
             
             combined = torch.cat([active_h, inactive_h])
-            
-            # Shuffle so "Active" isn't always index 0
             h[i] = combined[torch.randperm(self.n_asp)]
             
-        # Sort & Normalize (Crucial for the NN input format)
+        # Sort & Normalizew
         h, _ = torch.sort(h, dim=1)
         h = h - h[:, 0:1]
         
@@ -192,7 +274,7 @@ class SurfaceGenerator:
         n_si, h_si = self.generate_canonical_singles(n_single)
         n_wa, h_wa = self.generate_canonical_walls(n_wall)
         n_sp, h_sp = self.generate_sparse(n_sparse)
-        n_bi, h_bi = self.generate_bimodal(n_switch)
+        n_bi, h_bi = self.generate_multistep(n_switch)
         
         # 3. Concatenate (Order matters for Index Ranges!)
         # Order: LHS -> Random Sum -> Single -> Wall -> Sparse -> Switch
