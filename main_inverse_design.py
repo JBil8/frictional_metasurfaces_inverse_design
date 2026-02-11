@@ -97,7 +97,6 @@ def main():
             mode='min',
             factor=cfg['training']['scheduler']['factor'],   # e.g., 0.5
             patience=cfg['training']['scheduler']['patience'],  # e.g., 5
-            verbose=True
         )
 
         # Training Loop

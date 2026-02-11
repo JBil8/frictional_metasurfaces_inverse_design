@@ -10,20 +10,29 @@ class SurfaceInverseModel(nn.Module):
         
         # --- Encoder (Feature Extractor) ---
         self.conv_layers = nn.Sequential(
-            # Block 1: Input channels = 3 (Load, Area, Stiffness)
-            nn.Conv1d(3, 16, kernel_size=5, padding=2, stride=2), 
-            nn.BatchNorm1d(16),
-            nn.ReLU(),
-            
-            # Block 2
-            nn.Conv1d(16, 32, kernel_size=3, padding=1, stride=2),
+            # Block 1: Capture broad trends (Wider kernel, more channels)
+            # Input: (B, 3, 500) -> Output: (B, 32, 250)
+            nn.Conv1d(3, 32, kernel_size=7, padding=3, stride=2), 
             nn.BatchNorm1d(32),
-            nn.ReLU(),
+            nn.GELU(),  
             
-            # Block 3
-            nn.Conv1d(32, 64, kernel_size=3, padding=1, stride=2),
+            # Block 2: Refine features
+            # Input: (B, 32, 250) -> Output: (B, 64, 125)
+            nn.Conv1d(32, 64, kernel_size=5, padding=2, stride=2),
             nn.BatchNorm1d(64),
-            nn.ReLU()
+            nn.GELU(),
+            
+            # Block 3: Abstract features
+            # Input: (B, 64, 125) -> Output: (B, 128, 63)
+            nn.Conv1d(64, 128, kernel_size=3, padding=1, stride=2),
+            nn.BatchNorm1d(128),
+            nn.GELU(),
+
+            # Block 4: High-level Logic (New Layer)
+            # Input: (B, 128, 63) -> Output: (B, 256, 32)
+            nn.Conv1d(128, 256, kernel_size=3, padding=1, stride=2),
+            nn.BatchNorm1d(256),
+            nn.GELU()
         )
         
         # --- Dynamic Size Calculation ---

@@ -8,8 +8,8 @@
 #SBATCH --gpus=1                # Request 1 GPU
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16      # 16 CPU cores to feed the GPU data
-#SBATCH --mem=64G               # Request 64GB RAM (Safe for 500k samples)
+#SBATCH --cpus-per-task=8      # 16 CPU cores to feed the GPU data
+#SBATCH --mem=32G               # Request 64GB RAM (Safe for 500k samples)
 #SBATCH --time=02:00:00         # 4 hours (adjust if needed)
 
 # --- Environment Setup ---
