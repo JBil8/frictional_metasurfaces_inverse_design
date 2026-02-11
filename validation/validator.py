@@ -22,6 +22,8 @@ from ml_models.model_mlp import SurfaceInverseModel
 from physics.differentiable import AxisymmetricContactLayer
 from utils.config import load_config
 from utils.normalization import get_theoretical_limits
+from utils.seeding import set_seed
+
 
 class UnifiedValidator:
     def __init__(self, cfg_path="config.yaml"):
@@ -125,8 +127,9 @@ class UnifiedValidator:
         h_opt = h_init.clone().detach().requires_grad_(True)
         
         optimizer = optim.LBFGS([n_opt, h_opt], lr=0.5, max_iter=20, line_search_fn='strong_wolfe')
-        criterion_mse = nn.MSELoss()
-        
+        criterion = nn.MSELoss()
+        # criterion_l1 = nn.L1Loss()
+  
         # Normalization factors to balance Load vs Area optimization
         # (Add epsilon to avoid division by zero)
         scale_l = target_load.abs().mean().item() + 1e-6
@@ -141,15 +144,14 @@ class UnifiedValidator:
                 h_sorted = h_sorted - h_sorted[:, 0:1]
                 
                 # Soft constraints to keep physics stable without hard clamping
-                # We use softplus for heights to keep them positive-ish
-                # We simply let n float, but the physics engine handles n < 1 gracefully usually?
-                # Actually, let's just stick to the sorted h.
                 
                 l_pred, a_pred = self.phys(h_sorted, n_opt, self.gen.t_w, indent_profile)
                 
                 # NORMALIZED LOSS
-                loss_l = criterion_mse(l_pred, target_load) / (scale_l**2)
-                loss_a = criterion_mse(a_pred, target_area) / (scale_a**2)
+                loss_l = criterion(l_pred, target_load) / (scale_l**2)
+                loss_a = criterion(a_pred, target_area) / (scale_a**2)
+                # loss_l = criterion_l1(l_pred, target_load) / scale_l
+                # loss_a = criterion_l1(a_pred, target_area) / scale_a
                 
                 loss = loss_l + loss_a
                 loss.backward()
@@ -168,6 +170,116 @@ class UnifiedValidator:
             l_final, a_final = self.phys(h_final, n_final, self.gen.t_w, indent_profile)
             
         return n_final, h_final, l_final, a_final
+
+    def validate_optimization_baseline(self, target_type="bilinear", n_starts=10):
+        """
+        Compares 'CNN + Optimizer' vs 'Multi-Start Random + Optimizer'.
+        Updated to include Dynamic Indentation Extension.
+        """
+        print(f"[Baseline] Comparing CNN vs Multi-Start ({n_starts} guesses) for {target_type}...")
+        
+        # 1. Generate Target
+        if target_type == "bilinear": t_l, t_a, title = self.gen.get_consistent_bilinear()
+        elif target_type == "saturate": t_l, t_a, title = self.gen.get_consistent_saturating()
+        elif target_type == "linear": t_l, t_a, title = self.gen.get_consistent_linear_coulomb()
+        else: return
+
+        # 2. Setup Inputs
+        prepend_val = torch.zeros(1, 1).to(self.device)
+        raw_stiff = torch.diff(t_l, dim=1, prepend=prepend_val)
+        nn_input = torch.cat([t_l/self.MAX_L, t_a/self.MAX_A, raw_stiff/self.MAX_S], dim=0).unsqueeze(0)
+
+        # ==========================================
+        # STRATEGY A: CNN Initialization
+        # ==========================================
+        print("  > Strategy A: CNN Initialization...")
+        with torch.no_grad():
+            n_cnn, h_cnn = self.model(nn_input)
+            
+            # --- CRITICAL FIX: Dynamic Indentation Check ---
+            # We must check if the CNN prediction needs deeper indentation 
+            # to match the target load.
+            l_std, _ = self.phys(h_cnn, n_cnn, self.gen.t_w, self.gen.indentations)
+            current_max = l_std.max().item()
+            target_max = t_l.max().item()
+            
+            # Default to standard
+            active_ind = self.gen.indentations
+            
+            if current_max < target_max:
+                print(f"    [Indentation] Extending depth (Pred: {current_max:.2f}N < Target: {target_max:.2f}N)")
+                ratio = target_max / (current_max + 1e-6)
+                new_max_d = self.gen.max_d * ratio * 1.2 # +20% buffer
+                
+                # Create extended profile with SAME number of steps
+                active_ind = torch.linspace(0, new_max_d, self.gen.n_steps).unsqueeze(0).to(self.device)
+        
+        # Optimize (Using the CORRECT indentation profile)
+        n_A, h_A, l_A, a_A = self.refine_prediction(
+            t_l, t_a, n_cnn, h_cnn, active_ind, steps=100
+        )
+        
+        loss_A = torch.nn.functional.mse_loss(l_A, t_l) + torch.nn.functional.mse_loss(a_A, t_a)
+        print(f"    [CNN] Final Loss: {loss_A.item():.6f}")
+
+        # ==========================================
+        # STRATEGY B: Multi-Start Random
+        # ==========================================
+        print(f"  > Strategy B: Multi-Start ({n_starts} random guesses)...")
+        
+        best_loss_B = float('inf')
+        best_n_B = None
+        best_h_B = None
+        
+        # NOTE: Random guesses might be stiff or soft. 
+        # Ideally, we should check indentation for EACH guess, but that's expensive.
+        # We will use the SAME extended profile 'active_ind' for fairness.
+        # This gives the random baseline the best possible chance.
+        
+        for k in range(n_starts):
+            # Random Guess
+            n_rand = torch.rand(1, self.gen.n_asp).to(self.device) * 7.0 + 1.0
+            h_rand = torch.rand(1, self.gen.n_asp).to(self.device) * self.gen.max_d
+            h_rand, _ = torch.sort(h_rand, dim=1)
+            h_rand = h_rand - h_rand[:, 0:1]
+            
+            # Probe (Short Opt)
+            n_probe, h_probe, l_probe, a_probe = self.refine_prediction(
+                t_l, t_a, n_rand, h_rand, active_ind, steps=20
+            )
+            
+            probe_loss = torch.nn.functional.mse_loss(l_probe, t_l) + torch.nn.functional.mse_loss(a_probe, t_a)
+            
+            if probe_loss < best_loss_B:
+                best_loss_B = probe_loss
+                best_n_B = n_probe
+                best_h_B = h_probe
+                print(f"    [Start #{k+1}] New Best Probe Loss: {probe_loss.item():.6f}")
+
+        # Refine Best Random
+        print(f"  > Refining Best Random Candidate...")
+        n_B, h_B, l_B, a_B = self.refine_prediction(
+            t_l, t_a, best_n_B, best_h_B, active_ind, steps=80
+        )
+        loss_B = torch.nn.functional.mse_loss(l_B, t_l) + torch.nn.functional.mse_loss(a_B, t_a)
+        print(f"    [Multi-Start] Final Loss: {loss_B.item():.6f}")
+
+        # ==========================================
+        # PLOT
+        # ==========================================
+        fig = plt.figure(figsize=(10, 6))
+        plt.plot(t_l.cpu().numpy().flatten(), t_a.cpu().numpy().flatten(), 'k-', lw=3, label="Target")
+        plt.plot(l_A.cpu().detach().numpy().flatten(), a_A.cpu().detach().numpy().flatten(), 'b--', lw=2, label=f"CNN + Opt (Loss: {loss_A.item():.2e})")
+        plt.plot(l_B.cpu().detach().numpy().flatten(), a_B.cpu().detach().numpy().flatten(), 'r:', lw=2, label=f"Multi-Start (Loss: {loss_B.item():.2e})")
+        
+        plt.title(f"Optimization Basin: {title}")
+        plt.xlabel("Load")
+        plt.ylabel("Area")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        os.makedirs("plots", exist_ok=True)
+        plt.savefig(f"plots/multistart_{target_type}.png", dpi=150)
 
     def validate_designed(self, target_type="linear", refine=False):
         """
@@ -317,18 +429,23 @@ class UnifiedValidator:
         ax2.legend()
         
         plt.tight_layout()
-        os.makedirs("plots_test", exist_ok=True)
+        os.makedirs("plots", exist_ok=True)
         sname = title.split(":")[1].strip().split(" ")[0].lower() if ":" in title else "sample"
-        save_path = f"plots_test/val_test_{sname}.png"
+        save_path = f"plots/val_test_{sname}.png"
         plt.savefig(save_path, dpi=150)
         print(f"[Validator] Saved plot to {save_path}")
         plt.close()
 
 if __name__ == "__main__":
     val = UnifiedValidator("config.yaml")
-    
+
+    set_seed(42) # For reproducibility of random samples and splits
+
     # Run the rigorous Test Set Validation
-    # val.validate_on_test_set()
-    # val.validate_designed(target_type="linear", refine=True)
+    val.validate_on_test_set()
+    val.validate_designed(target_type="linear", refine=True)
     val.validate_designed(target_type="saturate", refine=True)
-    # val.validate_designed(target_type="bilinear", refine=True)
+    val.validate_designed(target_type="bilinear", refine=True)
+    val.validate_optimization_baseline(target_type="saturate")
+    val.validate_optimization_baseline(target_type="bilinear")
+    val.validate_optimization_baseline(target_type="linear")    

@@ -3,13 +3,15 @@ import os
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
+import numpy as np
+from scipy.stats.qmc import LatinHypercube
 
 # Ensure we can import from parent directory
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from utils.config import load_config
 from physics.differentiable import AxisymmetricContactLayer
-import numpy as np
-from scipy.stats.qmc import LatinHypercube
+from utils.seeding import set_seed
+
 
 class SurfaceGenerator:
     def __init__(self, config):
@@ -71,7 +73,7 @@ class SurfaceGenerator:
                 # Active: At 0
                 h_active = torch.rand(n_active) * (0.01 * self.max_delta)
                 # Inactive: Far away
-                h_inactive = (0.5 + 0.5 * torch.rand(self.n_asp - n_active)) * self.max_delta
+                h_inactive = (1.0 + 0.2 * torch.rand(self.n_asp - n_active)) * self.max_delta
                 
                 combined = torch.cat([h_active, h_inactive])
                 h[i] = combined[torch.randperm(self.n_asp)]
@@ -206,31 +208,30 @@ class SurfaceGenerator:
             if mode < 0.33:
                 # Mode A: Uniform Random (The "LHS" look, but simpler)
                 # Active are anywhere in [0, max_delta]
-                active_h = torch.rand(n_active) * self.max_delta
+                h_active = torch.rand(n_active) * self.max_delta
                 
             elif mode < 0.66:
                 # Mode B: Gaussian Cluster (The "Wall/Switch" look)
                 # Clustered around a random mean depth
                 mean_depth = np.random.rand() * self.max_delta
                 sigma = 0.1 * self.max_delta
-                active_h = torch.normal(mean_depth, sigma, size=(n_active,))
+                h_active = torch.normal(mean_depth, sigma, size=(n_active,))
                 
             else:
-                # Mode C: Exponential-ish (The "Linear/Coulomb" look) [NEW]
+                # Mode C: Exponential-ish (The "Linear/Coulomb" look)
                 # This explicitly creates the "Long Tail" the network was missing.
                 # Many at 0, fewer at 0.2, very few at 0.5...
                 raw_exp = torch.distributions.Exponential(rate=3.0).sample((n_active,))
                 # Scale to physical range
-                active_h = raw_exp * (0.3 * self.max_delta)
+                h_active = raw_exp * (0.3 * self.max_delta)
             
             # 3. Clip to stay physical
-            active_h = torch.clamp(active_h, 0, self.max_delta)
+            h_active = torch.clamp(h_active, 0, self.max_delta)
             
             # 4. Inactive ones pushed to infinity
-            # (But vary "infinity" slightly so the network doesn't memorize a specific value)
-            inactive_h = (1.2 + 0.5 * torch.rand(self.n_asp - n_active)) * self.max_delta
-            
-            combined = torch.cat([active_h, inactive_h])
+            h_inactive = (1.0 + 0.2 * torch.rand(self.n_asp - n_active)) * self.max_delta
+
+            combined = torch.cat([h_active, h_inactive])
             h[i] = combined[torch.randperm(self.n_asp)]
             
         # Sort & Normalizew
@@ -276,7 +277,7 @@ class SurfaceGenerator:
         n_sp, h_sp = self.generate_sparse(n_sparse)
         n_bi, h_bi = self.generate_multistep(n_switch)
         
-        # 3. Concatenate (Order matters for Index Ranges!)
+        # Concatenate (Order matters for Index Ranges!)
         # Order: LHS -> Random Sum -> Single -> Wall -> Sparse -> Switch
         all_n = torch.cat([n_lhs_data, n_rn, n_si, n_wa, n_sp, n_bi])
         all_h = torch.cat([h_lhs_data, h_rn, h_si, h_wa, h_sp, h_bi])
@@ -289,18 +290,20 @@ class SurfaceGenerator:
     
 
 if __name__ == "__main__":
-    # 1. Setup
+    
     print("--- Starting Dataset Generation ---")
     
+    # set seed
+    set_seed(42)
+
     # Load Config
-    # We assume this script is located in 'data/' and config is in root
     config_path = os.path.join(os.path.dirname(__file__), "../config.yaml")
     cfg = load_config(config_path)
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # 2. Generate Parameters (The "Y" data)
+    # Generate Parameters (The "Y" data)
     gen = SurfaceGenerator(cfg)
     n_samples = cfg['data']['n_samples']
     
@@ -311,7 +314,7 @@ if __name__ == "__main__":
     all_n = all_n.to(device)
     all_h = all_h.to(device)
     
-    # 3. Solve Physics (The "X" data)
+    # Solve Physics (The "X" data)
     print("Solving physics to generate Load/Area curves...")
     phys = AxisymmetricContactLayer(E_star=cfg['physics']['E_star']).to(device)
     
@@ -356,11 +359,8 @@ if __name__ == "__main__":
     
     Y_final = torch.cat([all_n.cpu(), all_h.cpu()], dim=1)
     
-    # 4. Save using Config Path
-    # We resolve the path relative to the project root (Current Working Directory)
+    # Save
     save_path = cfg['data']['path']
-    
-    # Ensure the directory exists (e.g., if path is 'data/subdir/dataset.pt')
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     
     print(f"Saving dataset to: {save_path}")

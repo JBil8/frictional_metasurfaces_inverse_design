@@ -127,7 +127,7 @@ class TargetGenerator:
             # Exponential heights (The key to linearity)
             # We construct this manually to ensure it's "perfectly" exponential
             # independent of the random generator
-            h_dist = torch.distributions.Exponential(rate=5.0) 
+            h_dist = torch.distributions.Exponential(rate=10.0) 
             h_vals = h_dist.sample((1, self.n_asp)).to(self.device)
             
             # Scale to physical range
@@ -148,7 +148,7 @@ class TargetGenerator:
         """
         # 1. Maximize Exponent (Flat Punch behavior)
         # For a flat punch, Area is constant with depth (A ~ d^0), causing perfect saturation.
-        n = torch.ones(1, self.n_asp).to(self.device) * 7.0 
+        n = torch.ones(1, self.n_asp).to(self.device) * 6.0 
         
         # 2. Bounded Height Distribution (Uniform)
         # Gaussian has tails (infinite heights). Uniform has a hard cutoff.
