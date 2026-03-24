@@ -57,3 +57,4 @@ model_final.pth
 *.png
 *.npz
 *.db
+*.diff

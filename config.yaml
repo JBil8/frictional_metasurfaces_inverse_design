@@ -1,25 +1,27 @@
-experiment_name: "Asperity_Inverse_Design_v1"
+experiment_name: "Asperity_Inverse_Design_v3_UnitCell"
 
 physics:
-  n_asperities: 16
-  max_delta_ratio: 0.1
-  radius: 1.0
-  E_star: 1.0
+  n_asperities: 6              
+  max_delta_ratio: 0.1         # Elastic regime limit
+  radius: 0.001                # STRICT PHYSICAL SCALE: 1 mm
+  E_star: 1.0                  
 
 data:
-  path: "data/dataset_16_asp_mixed.pt"
+  path: "data/dataset_asp_unitcell.pt"
   n_steps: 500
-  n_samples: 5000
+  n_samples: 50000
 
 model:
-  hidden_dim: 1024
-  name: "model_best.pth"
+  hidden_dim: 256
+  name: "model_best_unitcell.pth"
 
 training:
   batch_size: 256
   epochs: 300
   learning_rate: 0.001
   device: "cuda"
+  loss_weights:
+    shape_weight: 1.0          
   scheduler:
     type: "ReduceLROnPlateau"
     patience: 5

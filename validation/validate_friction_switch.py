@@ -49,7 +49,7 @@ def refine_prediction(phys_engine, target_load, target_area, init_n, init_h,
         # 5. PROJECTED GRADIENT STEP (Crucial Fix!)
         # Clamp the actual variables in-place so they never go unphysical
         with torch.no_grad():
-            opt_n.data.clamp_(1.0, 8.0)
+            opt_n.data.clamp_(1.0, 3.0)
             opt_h.data.clamp_(0.0, indentations.max().item())
             
             # Optional: Enforce sorting to help the optimizer? 

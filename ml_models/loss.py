@@ -1,44 +1,21 @@
 import torch
 import torch.nn as nn
 
-
-class HybridLoss(nn.Module):
-    def __init__(self, w_log=10.0, w_lin=20.0, w_slope=5.0, w_param=1.0):
+class StiffnessLoss(nn.Module):
+    def __init__(self, w_stiff=1.0, w_grad=0.5):
         super().__init__()
         self.mse = nn.MSELoss()
-        self.w_log = w_log
-        self.w_lin = w_lin
-        self.w_slope = w_slope
-        self.w_param = w_param
+        self.l1 = nn.L1Loss() # <--- Use L1 for the discontinuous gradients
+        self.w_stiff = w_stiff
+        self.w_grad = w_grad 
 
-    def forward(self, pred_curve, target_curve, pred_params=None, target_params=None):
-        """
-        Args:
-            pred_curve: (Batch, 2, Steps) - The reconstructed Load/Area
-            target_curve: (Batch, 2, Steps) - The ground truth Load/Area
-            pred_params: (Optional) Predicted n, h
-            target_params: (Optional) Ground truth n, h
-        """
+    def forward(self, pred_curve, target_curve):
+        # Base Topology Loss (Handles the smooth, continuous regions well)
+        loss_stiff = self.mse(pred_curve, target_curve)
 
-        # Log Loss (Good for small values / initial contact)
-        loss_log = self.mse(torch.log1p(pred_curve), torch.log1p(target_curve))
+        # Gradient Loss (Forces the Cliffs to align without exploding the gradients)
+        pred_diff = torch.diff(pred_curve, dim=2)
+        target_diff = torch.diff(target_curve, dim=2)
+        loss_grad = self.l1(pred_diff, target_diff)
 
-        # Linear Loss (Good for high load / saturation)
-        loss_lin = self.mse(pred_curve, target_curve)
-
-        # Slope Loss (Smoothness)
-        pred_slope = pred_curve[:, :, 1:] - pred_curve[:, :, :-1]
-        targ_slope = target_curve[:, :, 1:] - target_curve[:, :, :-1]
-        loss_slope = self.mse(pred_slope, targ_slope)
-
-        # Combined Physics Loss
-        total_loss = (loss_log * self.w_log) + \
-                     (loss_lin * self.w_lin) + \
-                     (loss_slope * self.w_slope)
-
-        # Parameter Loss (Only if targets are provided!)
-        if pred_params is not None and target_params is not None:
-            loss_param = self.mse(pred_params, target_params)
-            total_loss += (loss_param * self.w_param)
-
-        return total_loss
+        return (loss_stiff * self.w_stiff) + (loss_grad * self.w_grad)
