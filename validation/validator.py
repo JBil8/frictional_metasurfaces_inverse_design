@@ -30,12 +30,14 @@ class UnifiedValidator:
         self.cfg = load_config(cfg_path)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+        # CRITICAL FIX 1: Intensive limits
         limits = get_theoretical_limits(self.cfg, self.device)
-        self.MAX_L = limits['max_load']
-        self.MAX_A = limits['max_area']
+        self.MAX_P = limits['max_pressure']
+        self.MAX_ALPHA = limits['max_alpha']
         self.MAX_S = limits['max_stiff']
 
-        self.phys = AxisymmetricContactLayer(E_star=self.cfg['physics']['E_star']).to(self.device)
+        # CRITICAL FIX 2: Physics engine takes full config
+        self.phys = AxisymmetricContactLayer(cfg=self.cfg).to(self.device)
         self.model = SurfaceInverseModel(self.cfg).to(self.device)
 
         model_name = self.cfg['model']['name']
@@ -79,31 +81,27 @@ class UnifiedValidator:
             idx = np.random.choice(indices)
             print(f"Validating {category.upper()} on Test Sample #{idx}...")
 
-            # CRITICAL FIX 1: Unpack 6 variables including Stiffness
-            t_l, t_a, t_s, gt_n, gt_h, title = self.gen.get_custom_sample(idx, category)
+            # Changed unpack names to Intensive properties
+            t_p, t_alpha, t_s, gt_n, gt_h, title = self.gen.get_custom_sample(idx, category)
 
-            # CRITICAL FIX 2: 1-Channel Input directly from analytical target
             nn_input = (t_s / self.MAX_S).unsqueeze(0)
 
             with torch.no_grad():
                 n_pred, h_pred = self.model(nn_input)
-                l_nn, a_nn, s_nn = self.phys(h_pred, n_pred, self.gen.t_w, self.gen.indentations)
+                p_nn, alpha_nn, s_nn = self.phys(h_pred, n_pred, self.gen.t_w, self.gen.indentations)
 
             if refine:
-                n_ref, h_ref, l_ref, a_ref, s_ref = self.refine_prediction(
+                n_ref, h_ref, p_ref, alpha_ref, s_ref = self.refine_prediction(
                     t_s, n_pred, h_pred, self.gen.indentations)
 
-                self.plot_triple_comparison(t_l, t_s, gt_n, gt_h,
-                                            l_nn, s_nn, n_pred, h_pred,
-                                            l_ref, s_ref, n_ref, h_ref,
+                self.plot_triple_comparison(t_p, t_s, gt_n, gt_h,
+                                            p_nn, s_nn, n_pred, h_pred,
+                                            p_ref, s_ref, n_ref, h_ref,
                                             f"Test: {category} (#{idx})")
             else:
-                self.plot_comparison(t_l, t_s, gt_n, gt_h, l_nn, s_nn, n_pred, h_pred, f"Test: {category} (#{idx})")
+                self.plot_comparison(t_p, t_s, gt_n, gt_h, p_nn, s_nn, n_pred, h_pred, f"Test: {category} (#{idx})")
 
     def refine_prediction(self, target_stiff, n_init, h_init, indent_profile, steps=50):
-        """
-        Refinement using Normalized Loss strictly on the Intensive Stiffness Profile.
-        """
         print(f"  > Refinement: Optimizing intensive topology (dF/dA)...")
 
         n_opt = n_init.clone().detach().requires_grad_(True)
@@ -120,7 +118,6 @@ class UnifiedValidator:
 
                 _, _, s_pred = self.phys(h_sorted, n_opt, self.gen.t_w, indent_profile)
 
-                # CRITICAL FIX 3: Optimize strictly for the normalized shape (Stiffness)
                 loss = criterion(s_pred / self.MAX_S, target_stiff / self.MAX_S)
                 loss.backward()
                 return loss
@@ -135,19 +132,19 @@ class UnifiedValidator:
             h_final, _ = torch.sort(h_opt, dim=1)
             h_final = h_final - h_final[:, 0:1]
             n_final = n_opt
-            l_final, a_final, s_final = self.phys(h_final, n_final, self.gen.t_w, indent_profile)
+            p_final, alpha_final, s_final = self.phys(h_final, n_final, self.gen.t_w, indent_profile)
 
-        return n_final, h_final, l_final, a_final, s_final
+        return n_final, h_final, p_final, alpha_final, s_final
 
     def validate_optimization_baseline(self, target_type="bilinear", n_starts=10):
         print(f"[Baseline] Comparing CNN vs Multi-Start ({n_starts} guesses) for {target_type}...")
 
         if target_type == "bilinear":
-            t_l, t_a, t_s, title = self.gen.get_consistent_bilinear()
+            t_p, t_alpha, t_s, title = self.gen.get_consistent_bilinear()
         elif target_type == "saturate":
-            t_l, t_a, t_s, title = self.gen.get_consistent_saturating()
+            t_p, t_alpha, t_s, title = self.gen.get_consistent_saturating()
         elif target_type == "linear":
-            t_l, t_a, t_s, title = self.gen.get_consistent_linear_coulomb()
+            t_p, t_alpha, t_s, title = self.gen.get_consistent_linear_coulomb()
         else:
             return
 
@@ -157,8 +154,7 @@ class UnifiedValidator:
         with torch.no_grad():
             n_cnn, h_cnn = self.model(nn_input)
 
-        # Optimize 
-        n_A, h_A, l_A, a_A, s_A = self.refine_prediction(t_s, n_cnn, h_cnn, self.gen.indentations, steps=100)
+        n_A, h_A, p_A, alpha_A, s_A = self.refine_prediction(t_s, n_cnn, h_cnn, self.gen.indentations, steps=100)
         loss_A = torch.nn.functional.mse_loss(s_A / self.MAX_S, t_s / self.MAX_S)
         print(f"    [CNN] Final Stiffness Loss: {loss_A.item():.6f}")
 
@@ -173,7 +169,7 @@ class UnifiedValidator:
             h_rand, _ = torch.sort(h_rand, dim=1)
             h_rand = h_rand - h_rand[:, 0:1]
 
-            n_probe, h_probe, l_probe, a_probe, s_probe = self.refine_prediction(
+            n_probe, h_probe, p_probe, alpha_probe, s_probe = self.refine_prediction(
                 t_s, n_rand, h_rand, self.gen.indentations, steps=20)
 
             probe_loss = torch.nn.functional.mse_loss(s_probe / self.MAX_S, t_s / self.MAX_S)
@@ -185,13 +181,12 @@ class UnifiedValidator:
                 print(f"    [Start #{k+1}] New Best Probe Loss: {probe_loss.item():.6f}")
 
         print(f"  > Refining Best Random Candidate...")
-        n_B, h_B, l_B, a_B, s_B = self.refine_prediction(t_s, best_n_B, best_h_B, self.gen.indentations, steps=80)
+        n_B, h_B, p_B, alpha_B, s_B = self.refine_prediction(t_s, best_n_B, best_h_B, self.gen.indentations, steps=80)
         loss_B = torch.nn.functional.mse_loss(s_B / self.MAX_S, t_s / self.MAX_S)
         print(f"    [Multi-Start] Final Stiffness Loss: {loss_B.item():.6f}")
 
         fig = plt.figure(figsize=(10, 6))
         
-        # Plotting Indentation vs Stiffness to verify the topology objective
         ind_np = self.gen.indentations.cpu().numpy().flatten()
         plt.plot(ind_np, t_s.cpu().numpy().flatten(), 'k-', lw=3, label="Target (dF/dA)")
         plt.plot(ind_np, s_A.cpu().detach().numpy().flatten(), 'b--', lw=2, label=f"CNN + Opt (Loss: {loss_A.item():.2e})")
@@ -210,25 +205,25 @@ class UnifiedValidator:
         print(f"[Validator] Generating fresh synthetic target: {target_type}...")
 
         if target_type == "linear":
-            t_l, t_a, t_s, title = self.gen.get_consistent_linear_coulomb()
+            t_p, t_alpha, t_s, title = self.gen.get_consistent_linear_coulomb()
         elif target_type == "saturate":
-            t_l, t_a, t_s, title = self.gen.get_consistent_saturating()
+            t_p, t_alpha, t_s, title = self.gen.get_consistent_saturating()
         elif target_type == "bilinear":
-            t_l, t_a, t_s, title = self.gen.get_consistent_bilinear()
+            t_p, t_alpha, t_s, title = self.gen.get_consistent_bilinear()
 
         nn_input = (t_s / self.MAX_S).unsqueeze(0)
 
         with torch.no_grad():
             n_pred, h_pred = self.model(nn_input)
-            l_nn, a_nn, s_nn = self.phys(h_pred, n_pred, self.gen.t_w, self.gen.indentations)
+            p_nn, alpha_nn, s_nn = self.phys(h_pred, n_pred, self.gen.t_w, self.gen.indentations)
 
         if refine:
-            n_ref, h_ref, l_ref, a_ref, s_ref = self.refine_prediction(t_s, n_pred, h_pred, self.gen.indentations)
-            self.plot_triple_comparison(t_l, t_s, None, None, l_nn, s_nn, n_pred, h_pred, l_ref, s_ref, n_ref, h_ref, f"Refined: {title}")
+            n_ref, h_ref, p_ref, alpha_ref, s_ref = self.refine_prediction(t_s, n_pred, h_pred, self.gen.indentations)
+            self.plot_triple_comparison(t_p, t_s, None, None, p_nn, s_nn, n_pred, h_pred, p_ref, s_ref, n_ref, h_ref, f"Refined: {title}")
         else:
-            self.plot_comparison(t_l, t_s, None, None, l_nn, s_nn, n_pred, h_pred, f"Unseen: {title}")
+            self.plot_comparison(t_p, t_s, None, None, p_nn, s_nn, n_pred, h_pred, f"Unseen: {title}")
 
-    def plot_comparison(self, t_l, t_s, gt_n, gt_h, l_nn, s_nn, n_pred, h_pred, title):
+    def plot_comparison(self, t_p, t_s, gt_n, gt_h, p_nn, s_nn, n_pred, h_pred, title):
         fig = plt.figure(figsize=(14, 6))
 
         ax1 = plt.subplot(1, 2, 1)
@@ -267,9 +262,9 @@ class UnifiedValidator:
         print(f"[Validator] Saved plot to {save_path}")
         plt.close()
 
-    def plot_triple_comparison(self, t_l, t_s, gt_n, gt_h,
-                               l_nn, s_nn, n_pred, h_pred,
-                               l_ref, s_ref, n_ref, h_ref, title):
+    def plot_triple_comparison(self, t_p, t_s, gt_n, gt_h,
+                               p_nn, s_nn, n_pred, h_pred,
+                               p_ref, s_ref, n_ref, h_ref, title):
         fig = plt.figure(figsize=(14, 6))
 
         ax1 = plt.subplot(1, 2, 1)

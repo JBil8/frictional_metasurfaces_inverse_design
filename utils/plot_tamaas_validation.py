@@ -1,62 +1,51 @@
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.lines as mlines
+import os
 
-# 1. Load Data
-data = np.load("./data/paper_validation_data.npz", allow_pickle=True)
+def plot_validation_results(npz_path="data/paper_validation_data.npz"):
+    if not os.path.exists(npz_path):
+        print(f"Error: Could not find {npz_path}")
+        return
 
-# 2. Setup Plot
-fig, ax = plt.subplots(figsize=(7, 6))
-plt.rcParams.update({'font.size': 12, 'font.family': 'serif'}) # Paper-quality fonts
+    data = np.load(npz_path, allow_pickle=True)
+    os.makedirs("plots", exist_ok=True)
 
-# Using a specific qualitative palette
-colors = ['#1f77b4', '#d62728', '#2ca02c', '#9467bd', '#ff7f0e'] 
-# Blue, Red, Green, Purple, Orange
+    for key in data.keys():
+        sample_data = data[key].item()
+        
+        # Unpack INTENSIVE properties
+        pressure_gt = sample_data["pressure_gt"]
+        alpha_gt = sample_data["alpha_gt"]
+        alpha_nn_analytical = sample_data["alpha_nn_analytical"]
+        pressure_bem = sample_data["pressure_bem"]
+        alpha_bem = sample_data["alpha_bem"]
 
-# 4. Loop through samples
-for i, key in enumerate(data.files):
-    sample = data[key].item()
-    
-    # Pick color for this sample (cycle if more than 5 samples)
-    c = colors[i % len(colors)]
-    
-    # Clean up the label name (e.g., "sample_0" -> "Sample A")
-    label_name = f"Sample {i+1}"
-    
-    # A. Plot Target (Ground Truth) -> Solid Line
-    # We only label the Target to keep the legend clean(er)
-    ax.plot(sample['load_gt'], sample['area_gt'], 
-            color=c, linestyle='-', linewidth=2.5, alpha=0.9, 
-            label=label_name)
+        fig, ax = plt.subplots(figsize=(8, 6))
 
-    # B. Plot NN Prediction -> Dashed Line
-    ax.plot(sample['load_gt'], sample['area_nn_analytical'], 
-            color=c, linestyle='--', linewidth=2.0, alpha=0.9)
+        # Ground Truth (Target)
+        ax.plot(pressure_gt, alpha_gt, 'k-', lw=3, label="Target (GT)")
+        
+        # NN Analytical Reconstruction
+        ax.plot(pressure_gt, alpha_nn_analytical, 'b--', lw=2, label="NN Analytical")
+        
+        # Tamaas BEM Verification
+        if pressure_bem is not None and alpha_bem is not None:
+            # Drop NaN values where BEM failed to converge
+            valid = ~np.isnan(alpha_bem)
+            ax.plot(pressure_bem[valid], alpha_bem[valid], 'ro', markersize=6, 
+                    label="Tamaas BEM (Validation)", markeredgecolor='k')
 
-    # C. Plot Tamaas (BEM) -> Points with white outline (pops nicely)
-    if sample['area_bem'] is not None:
-        ax.plot(sample['load_bem'], sample['area_bem'], 
-                marker='o', linestyle='None', markersize=7, 
-                color=c, markeredgecolor='white', markeredgewidth=1.0)
+        ax.set_title(f"Intensive Contact Mechanics: {key}")
+        ax.set_xlabel("Nominal Pressure, $P$ [Pa]")
+        ax.set_ylabel("Contact Fraction, $\\alpha$ [-]")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
 
-# 5. Styling
-ax.set_xlabel(r"Normal Load $F$ [N]")
-ax.set_ylabel(r"Real Contact Area $A$ [mm$^2$]")
-# ax.set_title("Validation: Neural Network vs. BEM vs. Ground Truth")
-ax.grid(True, which='both', linestyle='--', linewidth=0.5, alpha=0.7)
-j
-# Legend 1: Samples (Colors)
-# We already added labels to the Target plots, so standard legend handles colors
-legend1 = ax.legend(loc='upper left', title="Samples")
-ax.add_artist(legend1)
+        save_path = f"plots/tamaas_val_{key}.png"
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=150)
+        print(f"Saved {save_path}")
+        plt.close()
 
-# Legend 2: Methods (Styles)
-line_target = mlines.Line2D([], [], color='black', linestyle='-', linewidth=2.5, label='Target (GT)')
-line_nn     = mlines.Line2D([], [], color='black', linestyle='--', linewidth=2.0, label='NN Prediction')
-marker_bem  = mlines.Line2D([], [], color='black', marker='o', linestyle='None', 
-                          markersize=7, markeredgecolor='white', label='Tamaas (BEM)')
-
-ax.legend(handles=[line_target, line_nn, marker_bem], loc='lower right', title="Method")
-plt.savefig("tamaas_validation_plot.png", dpi=300)
-plt.tight_layout()
-plt.show()
+if __name__ == "__main__":
+    plot_validation_results()

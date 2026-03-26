@@ -1,7 +1,7 @@
-experiment_name: "Asperity_Inverse_Design_v3_UnitCell"
+experiment_name: "Asperity_Inverse_Design_v4_Intensive"
 
 physics:
-  n_asperities: 6              
+  n_asperities: 9              # CRITICAL: MUST be a perfect square (4, 9, 16)
   max_delta_ratio: 0.1         # Elastic regime limit
   radius: 0.001                # STRICT PHYSICAL SCALE: 1 mm
   E_star: 1.0                  
@@ -21,13 +21,16 @@ training:
   learning_rate: 0.001
   device: "cuda"
   loss_weights:
-    shape_weight: 1.0          
+    w_stiff: 1.0               # Weight for the dP/dAlpha topology & cliffs (L1 + MSE)
+    w_pressure: 2.0            # Weight for the Intensive Pressure anchor (MSE)
   scheduler:
     type: "ReduceLROnPlateau"
-    patience: 5
+    patience: 20
     factor: 0.5
 
 generation:
+  oversample_factor: 5         # Generates 250k samples before K-Means reduction
+  n_clusters: 2000             # Number of behavioral clusters for Coreset Selection
   ratios:
     lhs: 0.25        
     random_sum: 0.20

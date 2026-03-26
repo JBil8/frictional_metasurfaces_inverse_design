@@ -22,11 +22,11 @@ class TargetGenerator:
         w_wall = self.t_w.clone()
 
         with torch.no_grad():
-            self.l_max, self.a_max, self.s_max = self.phys(h_wall, n_wall, w_wall, self.indentations)
+            self.p_max, self.alpha_max, self.s_max = self.phys(h_wall, n_wall, w_wall, self.indentations)
 
         n_cone = torch.ones(1, self.n_asp).to(device) * 1.0
         with torch.no_grad():
-            self.l_min, self.a_min, self.s_min = self.phys(h_wall, n_cone, w_wall, self.indentations)
+            self.p_min, self.alpha_min, self.s_min = self.phys(h_wall, n_cone, w_wall, self.indentations)
 
         print("[TargetGenerator] Loading dataset for validation sampling...")
         data_path = cfg['data']['path']
@@ -77,8 +77,8 @@ class TargetGenerator:
         x_sample = self.data['x'][idx].unsqueeze(0).to(self.device)
         y_sample = self.data['y'][idx].unsqueeze(0).to(self.device)
 
-        target_load = x_sample[:, 0, :]
-        target_area = x_sample[:, 1, :]
+        target_pressure = x_sample[:, 0, :]
+        target_alpha = x_sample[:, 1, :]
         target_stiff = x_sample[:, 2, :] # CRITICAL: Extract Stiffness
 
         if noise_level > 0:
@@ -88,7 +88,7 @@ class TargetGenerator:
         gt_n = y_sample[:, :self.n_asp]
         gt_h = y_sample[:, self.n_asp:]
 
-        return target_load, target_area, target_stiff, gt_n, gt_h, f"Dataset: {category.capitalize()} (#{offset})"
+        return target_pressure, target_alpha, target_stiff, gt_n, gt_h, f"Dataset: {category.capitalize()} (#{offset})"
 
     def get_consistent_linear_coulomb(self):
         n = torch.ones(1, self.n_asp).to(self.device) * 2.0 
@@ -100,21 +100,22 @@ class TargetGenerator:
         h = h - h[:, 0:1] 
 
         with torch.no_grad():
-            target_load, target_area, target_stiff = self.phys(h, n, self.t_w, self.indentations)
+            target_pressure, target_alpha, target_stiff = self.phys(h, n, self.t_w, self.indentations)
 
-        return target_load, target_area, target_stiff, "Linear (GW Physics)"
+        return target_pressure, target_alpha, target_stiff, "Linear (GW Physics)"
 
     def get_consistent_saturating(self):
-        n = torch.ones(1, self.n_asp).to(self.device) * 6.0
+        # CRITICAL FIX: Limit exponent to 3.0 to match the new restricted physical limits
+        n = torch.ones(1, self.n_asp).to(self.device) * 3.0
         h_vals = torch.rand(1, self.n_asp).to(self.device)
         h = h_vals * (0.25 * self.max_d)
         h, _ = torch.sort(h, dim=1)
         h = h - h[:, 0:1]
 
         with torch.no_grad():
-            target_load, target_area, target_stiff = self.phys(h, n, self.t_w, self.indentations)
+            target_pressure, target_alpha, target_stiff = self.phys(h, n, self.t_w, self.indentations)
 
-        return target_load, target_area, target_stiff, "Saturating (Bounded Flat Punches)"
+        return target_pressure, target_alpha, target_stiff, "Saturating (Bounded Flat Punches)"
 
     def get_consistent_bilinear(self):
         n = torch.ones(1, self.n_asp).to(self.device) * 3.0
@@ -129,19 +130,19 @@ class TargetGenerator:
         h = torch.cat([h1, h2], dim=1)
 
         with torch.no_grad():
-            target_load, target_area, target_stiff = self.phys(h, n, self.t_w, self.indentations)
+            target_pressure, target_alpha, target_stiff = self.phys(h, n, self.t_w, self.indentations)
 
-        return target_load, target_area, target_stiff, "Bilinear (Gap Physics)"
+        return target_pressure, target_alpha, target_stiff, "Bilinear (Gap Physics)"
 
     def get_custom_sample(self, idx, label="Custom"):
         x_sample = self.data['x'][idx].unsqueeze(0).to(self.device)
         y_sample = self.data['y'][idx].unsqueeze(0).to(self.device)
 
-        target_load = x_sample[:, 0, :]
-        target_area = x_sample[:, 1, :]
+        target_pressure = x_sample[:, 0, :]
+        target_alpha = x_sample[:, 1, :]
         target_stiff = x_sample[:, 2, :] # CRITICAL: Extract Stiffness
         
         gt_n = y_sample[:, :self.n_asp]
         gt_h = y_sample[:, self.n_asp:]
 
-        return target_load, target_area, target_stiff, gt_n, gt_h, f"Dataset: {label.capitalize()} (#{idx})"
+        return target_pressure, target_alpha, target_stiff, gt_n, gt_h, f"Dataset: {label.capitalize()} (#{idx})"

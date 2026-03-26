@@ -1,62 +1,47 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
-def plot_reconstruction(target_load, target_stiff, pred_load, pred_stiff, 
-                        target_params, pred_params, epoch):
+def plot_reconstruction(t_p, t_s, p_p, p_s, t_params, p_params, epoch):
     """
-    Creates a 2x2 figure comparing Curves AND Parameters.
-    
-    Args:
-        target_load, target_stiff: (N_steps,) arrays
-        pred_load, pred_stiff:     (N_steps,) arrays
-        target_params: (2*N,) array [N exponents, N offsets]
-        pred_params:   (2*N,) array
+    Plots the intensive reconstruction during training.
+    t_p, p_p: Target and Predicted Nominal Pressure
+    t_s, p_s: Target and Predicted Stiffness (dP/dAlpha)
     """
-    fig, axs = plt.subplots(2, 2, figsize=(14, 10))
-    
-    # --- Row 1: The Physics (Curves) ---
-    
-    # 1. Load vs Step
-    axs[0, 0].plot(target_load, label='Target (GT)', color='black', linewidth=2)
-    axs[0, 0].plot(pred_load, label='Pred', color='red', linestyle='--')
-    axs[0, 0].set_title(f"Load vs Indentation Step (Epoch {epoch})")
-    axs[0, 0].legend()
-    axs[0, 0].grid(True, alpha=0.3)
+    fig, axs = plt.subplots(1, 3, figsize=(18, 5))
+    fig.suptitle(f"Epoch {epoch} Reconstruction (Intensive Properties)", fontsize=16)
 
-    # 2. Stiffness (dF/dA) vs Step
-    axs[0, 1].plot(target_stiff, label='Target (GT)', color='black', linewidth=2)
-    axs[0, 1].plot(pred_stiff, label='Pred', color='blue', linestyle='--')
-    axs[0, 1].set_title("Marginal Friction (dF/dA) vs Indentation Step")
-    axs[0, 1].legend()
-    axs[0, 1].grid(True, alpha=0.3)
+    # 1. Nominal Pressure vs Indentation
+    axs[0].plot(t_p, 'k-', lw=2, label='Target Pressure')
+    axs[0].plot(p_p, 'b--', lw=2, label='Predicted Pressure')
+    axs[0].set_title("Nominal Pressure Capacity")
+    axs[0].set_xlabel("Indentation Step")
+    axs[0].set_ylabel("Normalized Pressure (P / P_max)")
+    axs[0].legend()
+    axs[0].grid(True, alpha=0.3)
+
+    # 2. Intensive Stiffness vs Indentation
+    axs[1].plot(t_s, 'k-', lw=2, label='Target dP/dAlpha')
+    axs[1].plot(p_s, 'b--', lw=2, label='Predicted dP/dAlpha')
+    axs[1].set_title("Topological Stiffness (Cliffs)")
+    axs[1].set_xlabel("Indentation Step")
+    axs[1].set_ylabel("Normalized Stiffness")
+    axs[1].legend()
+    axs[1].grid(True, alpha=0.3)
+
+    # 3. Parameters (Topology)
+    n_asp = len(t_params) // 2
+    t_h = t_params[n_asp:]
+    p_h = p_params[n_asp:]
     
-    # --- Row 2: The Design (Parameters) ---
-    
-    # DYNAMIC: Calculate n_asp safely based on the passed array length
-    n_asp = len(target_params) // 2
-    
-    gt_n = target_params[:n_asp]
-    pred_n = pred_params[:n_asp]
-    
-    gt_h = target_params[n_asp:]
-    pred_h = pred_params[n_asp:]
-    
-    x_indices = np.arange(n_asp)
-    
-    # 3. Exponents Comparison
+    indices = np.arange(n_asp)
     width = 0.35
-    axs[1, 0].bar(x_indices - width/2, gt_n, width, label='GT Exponents', color='gray')
-    axs[1, 0].bar(x_indices + width/2, pred_n, width, label='Pred Exponents', color='orange')
-    axs[1, 0].set_title("Shape Exponents (n) per Asperity")
-    axs[1, 0].set_xlabel("Asperity Index")
-    axs[1, 0].legend()
     
-    # 4. Height Offsets Comparison
-    axs[1, 1].bar(x_indices - width/2, gt_h, width, label='GT Offsets', color='gray')
-    axs[1, 1].bar(x_indices + width/2, pred_h, width, label='Pred Offsets', color='green')
-    axs[1, 1].set_title("Height Offsets (h) per Asperity")
-    axs[1, 1].set_xlabel("Asperity Index")
-    axs[1, 1].legend()
-    
+    axs[2].bar(indices - width/2, t_h, width, label='Target Heights', color='k', alpha=0.6)
+    axs[2].bar(indices + width/2, p_h, width, label='Predicted Heights', color='b', alpha=0.6)
+    axs[2].set_title("Asperity Height Offsets")
+    axs[2].set_xlabel("Asperity Index")
+    axs[2].set_ylabel("Height [m]")
+    axs[2].legend()
+
     plt.tight_layout()
     return fig

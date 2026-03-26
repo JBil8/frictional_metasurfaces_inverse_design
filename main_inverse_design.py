@@ -10,7 +10,7 @@ from utils.plotting import plot_reconstruction
 from utils.normalization import get_theoretical_limits
 from utils.early_stopping import EarlyStopping
 from ml_models.model_mlp import SurfaceInverseModel
-from ml_models.loss import StiffnessLoss
+from ml_models.loss import CurriculumIntensiveLoss 
 from physics.differentiable import AxisymmetricContactLayer
 
 def main():
@@ -30,21 +30,21 @@ def main():
         # 2. Load Data
         print(f"Loading data from {cfg['data']['path']}...")
         data = torch.load(cfg['data']['path'])
-        X = data["x"]  # (N, 3, Steps) -> [Load, Area, dF/dA]
+        X = data["x"]  # (N, 3, Steps) -> [Pressure, Alpha, dP/dAlpha]
         Y = data["y"]  # (N, Params)
 
-        # Normalization
+        # Normalization (Using the new intensive limits)
         limits = get_theoretical_limits(cfg, device)
-        MAX_L = limits['max_load']
-        MAX_A = limits['max_area']
+        MAX_P = limits['max_pressure']
+        MAX_ALPHA = limits['max_alpha']
         MAX_S = limits['max_stiff']
         
-        X[:, 0, :] /= MAX_L
-        X[:, 1, :] /= MAX_A
-        X[:, 2, :] /= MAX_S  # Normalize Stiffness
+        X[:, 0, :] /= MAX_P
+        X[:, 1, :] /= MAX_ALPHA
+        X[:, 2, :] /= MAX_S  
 
-        mlflow.log_metric("norm_max_load", float(MAX_L))
-        mlflow.log_metric("norm_max_area", float(MAX_A))
+        mlflow.log_metric("norm_max_pressure", float(MAX_P))
+        mlflow.log_metric("norm_max_alpha", float(MAX_ALPHA))
         mlflow.log_metric("norm_max_stiff", float(MAX_S))
 
         dataset = TensorDataset(X, Y)
@@ -64,7 +64,8 @@ def main():
         val_plot_loader = DataLoader(val_ds, batch_size=1, shuffle=True)
 
         model = SurfaceInverseModel(cfg).to(device)
-        physics = AxisymmetricContactLayer(E_star=cfg['physics']['E_star']).to(device)
+        # CRITICAL FIX: Physics layer now requires the full cfg to calculate domain L
+        physics = AxisymmetricContactLayer(cfg=cfg).to(device)
 
         max_d = cfg['physics']['max_delta_ratio'] * cfg['physics']['radius']
         steps = cfg['data']['n_steps']
@@ -77,39 +78,49 @@ def main():
             patience=cfg['training']['scheduler']['patience']
         )
 
-        criterion = StiffnessLoss(w_stiff=1.0, w_grad=0.5).to(device)
+        # Initialize the Intensive Loss using config weights
+        w_stiff = cfg['training']['loss_weights'].get('w_stiff', 1.0)
+        w_pressure = cfg['training']['loss_weights'].get('w_pressure', 2.0)
+        criterion = CurriculumIntensiveLoss(w_stiff=w_stiff, w_pressure=w_pressure, max_delta=max_d).to(device)
 
         print("Starting training...")
         epochs = cfg['training']['epochs']
 
         for epoch in range(epochs):
-            # --- PHASE 1: TRAINING ---
             model.train()
             train_loss_accum = 0.0
+
+            # CALCULATE DECAY: Fades from 1.0 to 0.0 over the first 50% of epochs
+            progress = epoch / (epochs * 0.5)
+            lambda_param = max(0.0, 1.0 - progress)
+            mlflow.log_metric("lambda_param", lambda_param, step=epoch)
 
             for bx, by in train_loader:
                 bx, by = bx.to(device), by.to(device)
                 optimizer.zero_grad()
 
-                # Isolate targets
-                target_load = bx[:, 0:1, :]   # Extract Load
-                target_stiff = bx[:, 2:3, :]  # Extract Stiffness
+                target_pressure = bx[:, 0:1, :]   
+                target_stiff = bx[:, 2:3, :]  
 
-                p_n, p_h = model(target_stiff) # Input is STILL only Stiffness!
+                # Pass ALL 3 Channels to the network
+                p_n, p_h = model(bx) 
 
-                # Reconstruct Physics
                 p_w = torch.ones_like(p_n) * 2.0 * cfg['physics']['radius']
                 batch_ind = indentations.repeat(bx.shape[0], 1)
                 
-                rec_l, rec_a, rec_s = physics(p_h, p_n, p_w, batch_ind)
+                rec_p, rec_alpha, rec_s = physics(p_h, p_n, p_w, batch_ind)
 
-                # Normalize Predictions
-                rec_l = (rec_l / MAX_L).unsqueeze(1)
+                rec_p = (rec_p / MAX_P).unsqueeze(1)
                 rec_s = (rec_s / MAX_S).unsqueeze(1) 
 
                 total_loss = criterion(
-                    pred_curve=rec_s, 
-                    target_curve=target_stiff
+                    pred_stiff=rec_s, 
+                    target_stiff=target_stiff,
+                    pred_pressure=rec_p,
+                    target_pressure=target_pressure,
+                    pred_params=torch.cat([p_n, p_h], dim=1),
+                    target_params=by,
+                    lambda_param=lambda_param  # Inject the current decay weight
                 )
                 
                 total_loss.backward()
@@ -129,21 +140,27 @@ def main():
                 for vx, vy in val_loader:
                     vx, vy = vx.to(device), vy.to(device)
                     
-                    val_target_load = vx[:, 0:1, :]
+                    val_target_pressure = vx[:, 0:1, :]
                     val_target_stiff = vx[:, 2:3, :]
                     
-                    vn, vh = model(val_target_stiff)
+                    # Passing full 3-channel vx as discussed
+                    vn, vh = model(vx)
 
                     vw = torch.ones_like(vn) * 2.0 * cfg['physics']['radius']
                     batch_ind_val = indentations.repeat(vx.shape[0], 1)
-                    v_l, v_a, v_s = physics(vh, vn, vw, batch_ind_val)
+                    v_p, v_alpha, v_s = physics(vh, vn, vw, batch_ind_val)
 
-                    v_l = (v_l / MAX_L).unsqueeze(1)
+                    v_p = (v_p / MAX_P).unsqueeze(1)
                     v_s = (v_s / MAX_S).unsqueeze(1)
 
                     val_batch_loss = criterion(
-                        pred_curve=v_s,
-                        target_curve=val_target_stiff
+                        pred_stiff=v_s,
+                        target_stiff=val_target_stiff,
+                        pred_pressure=v_p,
+                        target_pressure=val_target_pressure,
+                        pred_params=torch.cat([vn, vh], dim=1),
+                        target_params=vy,
+                        lambda_param=0.0  
                     )
                     
                     val_loss_accum += val_batch_loss.item()
@@ -168,21 +185,21 @@ def main():
                     vx, vy = vx.to(device), vy.to(device)
 
                     val_target_stiff = vx[:, 2:3, :]
-                    vn, vh = model(val_target_stiff)
+                    vn, vh = model(vx)
                     vw = torch.ones_like(vn) * 2.0 * cfg['physics']['radius']
-                    rec_l, rec_a, rec_s = physics(vh, vn, vw, indentations)
+                    rec_p, rec_alpha, rec_s = physics(vh, vn, vw, indentations)
 
                     # Extract Target vs Predicted for plotting
-                    t_l = (vx[0, 0, :] * MAX_L).cpu().numpy()
-                    t_s = (vx[0, 2, :] * MAX_S).cpu().numpy() # True Stiffness
-                    p_l = rec_l[0].cpu().numpy()
-                    p_s = rec_s[0].cpu().numpy()              # Pred Stiffness
+                    t_p = (vx[0, 0, :] * MAX_P).cpu().numpy()
+                    t_s = (vx[0, 2, :] * MAX_S).cpu().numpy() 
+                    p_p = rec_p[0].cpu().numpy()
+                    p_s = rec_s[0].cpu().numpy()              
                     
                     p_params = torch.cat([vn, vh], dim=1)[0].cpu().numpy()
                     t_params = vy[0].cpu().numpy()
 
-                    # Passing t_s and p_s instead of Area for the plot
-                    fig = plot_reconstruction(t_l, t_s, p_l, p_s, t_params, p_params, epoch)
+                    # Passes Pressure and Stiffness to the plotter
+                    fig = plot_reconstruction(t_p, t_s, p_p, p_s, t_params, p_params, epoch)
                     mlflow.log_figure(fig, f"validation_plots/epoch_{epoch}.png")
                     plt.close(fig)
 
@@ -208,11 +225,11 @@ def main():
                 tx, ty = tx.to(device), ty.to(device)
                 
                 test_target_stiff = tx[:, 2:3, :]
-                pn, ph = model(test_target_stiff)
+                pn, ph = model(tx)
                 
                 pw = torch.ones_like(pn) * 2.0 * cfg['physics']['radius']
                 batch_ind = indentations.repeat(tx.shape[0], 1)
-                rl, ra, rs = physics(ph, pn, pw, batch_ind)
+                rp, ra, rs = physics(ph, pn, pw, batch_ind)
                 
                 rs /= MAX_S
                 
