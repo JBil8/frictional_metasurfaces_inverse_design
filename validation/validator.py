@@ -84,7 +84,11 @@ class UnifiedValidator:
             # Changed unpack names to Intensive properties
             t_p, t_alpha, t_s, gt_n, gt_h, title = self.gen.get_custom_sample(idx, category)
 
-            nn_input = (t_s / self.MAX_S).unsqueeze(0)
+            nn_input = torch.stack([
+                t_p / self.MAX_P,
+                t_alpha / self.MAX_ALPHA,
+                t_s / self.MAX_S
+            ], dim=1)
 
             with torch.no_grad():
                 n_pred, h_pred = self.model(nn_input)
@@ -148,7 +152,11 @@ class UnifiedValidator:
         else:
             return
 
-        nn_input = (t_s / self.MAX_S).unsqueeze(0)
+        nn_input = torch.stack([
+            t_p / self.MAX_P,
+            t_alpha / self.MAX_ALPHA,
+            t_s / self.MAX_S
+        ], dim=1)
 
         print("  > Strategy A: CNN Initialization...")
         with torch.no_grad():
@@ -211,7 +219,12 @@ class UnifiedValidator:
         elif target_type == "bilinear":
             t_p, t_alpha, t_s, title = self.gen.get_consistent_bilinear()
 
-        nn_input = (t_s / self.MAX_S).unsqueeze(0)
+       
+        nn_input = torch.stack([
+            t_p / self.MAX_P,
+            t_alpha / self.MAX_ALPHA,
+            t_s / self.MAX_S
+        ], dim=1)
 
         with torch.no_grad():
             n_pred, h_pred = self.model(nn_input)
