@@ -103,6 +103,48 @@ class TargetGenerator:
             target_pressure, target_alpha, target_stiff = self.phys(h, n, self.t_w, self.indentations)
 
         return target_pressure, target_alpha, target_stiff, "Linear (GW Physics)"
+    
+    def get_synthetic_sigmoid(self):
+        """
+        Creates a purely synthetic target curve where P follows a sigmoid 
+        relative to alpha. Note: No ground-truth parameters exist for this.
+        """
+        # Create a normalized step axis [0, 1] to map to your indentations
+        steps = torch.linspace(0, 1, self.n_steps).to(self.device)
+        
+        # 1. Define Alpha (Contact Fraction)
+        # Let it grow smoothly up to a maximum of 40% contact
+        t_alpha = 0.4 * (steps ** 1.5) 
+        
+        # 2. Define Pressure (P) as a Sigmoid of Alpha
+        # Target roughly 50% of the theoretical maximum pressure capacity
+        P_max = self.p_max.max() * 0.5 
+        
+        k = 25.0       # Steepness of the switch
+        alpha_0 = 0.2  # Midpoint of the switch (triggers at 20% contact)
+        
+        raw_sig = torch.sigmoid(k * (t_alpha - alpha_0))
+        sig_init = torch.sigmoid(torch.tensor([-k * alpha_0])).to(self.device)
+        
+        # Shift and scale so P strictly starts at 0
+        t_p = P_max * (raw_sig - sig_init) 
+        
+        # 3. Calculate Target Stiffness (dP/dAlpha) numerically
+        t_s = torch.zeros_like(t_p)
+        dp = torch.diff(t_p)
+        da = torch.diff(t_alpha)
+        
+        # Prevent division by zero
+        valid = da > 1e-8
+        t_s[1:][valid] = dp[valid] / da[valid]
+        t_s[0] = t_s[1] 
+        
+        # Add batch dimensions
+        t_p = t_p.unsqueeze(0)
+        t_alpha = t_alpha.unsqueeze(0)
+        t_s = t_s.unsqueeze(0)
+        
+        return t_p, t_alpha, t_s, "Synthetic Sigmoid Switch"
 
     def get_consistent_saturating(self):
         # CRITICAL FIX: Limit exponent to 3.0 to match the new restricted physical limits

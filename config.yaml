@@ -1,15 +1,15 @@
-experiment_name: "Asperity_Inverse_Design_v4_Intensive"
+experiment_name: "Asperity_Inverse_Design_v5_P_Star"
 
 physics:
   n_asperities: 9              # CRITICAL: MUST be a perfect square (4, 9, 16)
   max_delta_ratio: 0.1         # Elastic regime limit
   radius: 0.001                # STRICT PHYSICAL SCALE: 1 mm
-  E_star: 1.0                  
+  E_star: 1.0                  # Dimensionless scaling enabled
 
 data:
   path: "data/dataset_asp_unitcell.pt"
   n_steps: 500
-  n_samples: 50000
+  n_samples: 250000
 
 model:
   hidden_dim: 256
@@ -21,20 +21,17 @@ training:
   learning_rate: 0.001
   device: "cuda"
   loss_weights:
-    w_stiff: 1.0               # Weight for the dP/dAlpha topology & cliffs (L1 + MSE)
-    w_pressure: 2.0            # Weight for the Intensive Pressure anchor (MSE)
+    w_stiff: 4.0               # Weight for the dP/dAlpha topology & cliffs
+    w_pressure: 1.0            # Weight for the Intensive Pressure anchor
   scheduler:
-    type: "ReduceLROnPlateau"
-    patience: 20
-    factor: 0.5
+    type: "CosineAnnealingLR"  # Ignores validation noise
+    eta_min: 1.0e-6            # Minimum learning rate
 
 generation:
-  oversample_factor: 5         # Generates 250k samples before K-Means reduction
-  n_clusters: 2000             # Number of behavioral clusters for Coreset Selection
   ratios:
-    lhs: 0.25        
-    random_sum: 0.20
-    single: 0.05
-    wall: 0.15      
-    sparse: 0.15
-    switch: 0.20
+    lhs: 0.30           # Space-filling baseline
+    random_sum: 0.30    # Standard averaged topologies
+    exiled: 0.10        # Teaches the network how to hide unused asperities
+    bimodal: 0.10       # Teaches violent stiffness cliffs
+    wall: 0.10          # 9-asperity simultaneous contact
+    sparse: 0.10        # Sequential multi-step contacts

@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import sys
 import os
+from torch import nn
 
 # Ensure project root is in path
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
@@ -11,57 +12,64 @@ from utils.config import load_config
 from ml_models.model_mlp import SurfaceInverseModel
 from physics.differentiable import AxisymmetricContactLayer
 
-def refine_prediction(phys_engine, target_load, target_area, init_n, init_h, 
-                      t_w, indentations, steps=500, lr=0.002): # More steps, lower LR
-    """
-    Refines prediction using Projected Gradient Descent and L1 Loss.
-    """
-    print(f"  > Starting Refinement ({steps} steps)...")
-    
-    # 1. Clone and Detach
-    opt_n = init_n.clone().detach().requires_grad_(True)
-    opt_h = init_h.clone().detach().requires_grad_(True)
-    
-    # 2. Optimizer
-    optimizer = optim.Adam([opt_n, opt_h], lr=lr)
-    
-    # scheduler to slow down as we get closer
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=50, factor=0.5)
-    
-    loss_history = []
-    
-    for i in range(steps):
-        optimizer.zero_grad()
-        
-        # 3. Forward (Use the variables directly)
-        rec_l, rec_a = phys_engine(opt_h, opt_n, t_w, indentations)
-        
-        # 4. Robust Loss (L1 Loss is better for sharp kinks)
-        # We focus purely on the Area-Load relationship
-        loss_area = torch.nn.functional.l1_loss(rec_a, target_area)
-        loss_load = torch.nn.functional.l1_loss(rec_l, target_load)
-        
-        total_loss = loss_area * 10 + loss_load * 100 # Stronger weight on Area shape
-        
-        total_loss.backward()
-        optimizer.step()
-        
-        # 5. PROJECTED GRADIENT STEP (Crucial Fix!)
-        # Clamp the actual variables in-place so they never go unphysical
-        with torch.no_grad():
-            opt_n.data.clamp_(1.0, 3.0)
-            opt_h.data.clamp_(0.0, indentations.max().item())
-            
-            # Optional: Enforce sorting to help the optimizer? 
-            # No, let it find its own way, but sorting helps visualization later.
-        
-        scheduler.step(total_loss)
-        loss_history.append(total_loss.item())
-        
-        if i % 100 == 0:
-            print(f"    Step {i}: Loss = {total_loss.item():.6f}")
+def refine_prediction(self, target_stiff, n_init, h_init, indent_profile, steps=50):
+    print(f"  > Refinement: Tandem Fine-Tuning (NN Init + L-BFGS)...")
 
-    return opt_n.detach(), opt_h.detach(), loss_history
+    # 1. Setup trainable parameters from the CNN's exact output
+    n_opt = n_init.clone().detach().requires_grad_(True)
+    h_opt = h_init.clone().detach().requires_grad_(True)
+
+    # L-BFGS is incredibly fast and accurate for local fine-tuning
+    optimizer = optim.LBFGS([n_opt, h_opt], lr=0.1, max_iter=20, line_search_fn='strong_wolfe')
+    criterion = nn.MSELoss()
+
+    # 2. Use an INTERMEDIATE steepness for gradients
+    # Sharp enough to preserve the cliff location, smooth enough to provide a gradient
+    k_fine_tune = 5e4 
+
+    for i in range(steps):
+        def closure():
+            optimizer.zero_grad()
+            
+            # Enforce physical sorting during optimization
+            h_sorted, _ = torch.sort(h_opt, dim=1)
+            h_sorted = h_sorted - h_sorted[:, 0:1]
+
+            # Run physics with the intermediate steepness
+            _, _, s_pred = self.phys(
+                h_sorted, 
+                n_opt, 
+                self.gen.t_w, 
+                indent_profile, 
+                k_steepness=k_fine_tune 
+            )
+
+            loss = criterion(s_pred / self.MAX_S, target_stiff / self.MAX_S)
+            loss.backward()
+            return loss
+
+        try:
+            optimizer.step(closure)
+        except Exception as e:
+            print(f"    [Warning] Optimization step failed: {e}")
+            break
+
+    # 3. Final Evaluation using TRUE, DISCONTINUOUS PHYSICS (k = 1e6)
+    with torch.no_grad():
+        h_final, _ = torch.sort(h_opt, dim=1)
+        h_final = h_final - h_final[:, 0:1]
+        n_final = n_opt
+        
+        p_final, alpha_final, s_final = self.phys(
+            h_final, 
+            n_final, 
+            self.gen.t_w, 
+            indent_profile, 
+            k_steepness=1e6 # Hard physical check
+        )
+
+    return n_final, h_final, p_final, alpha_final, s_final
+
 def main():
     cfg = load_config("config.yaml")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

@@ -24,12 +24,11 @@ class SurfaceInverseModel(nn.Module):
             nn.Conv1d(128, 256, kernel_size=3, padding=1, stride=2),
             nn.BatchNorm1d(256),
             nn.GELU(),
-            
-            # Global Pooling: Extracts the "presence" of features regardless of exact width
-            nn.AdaptiveMaxPool1d(1) 
         )
 
-        self.flatten_size = 256 
+        # N_steps = 500. After 4 strided (x2) convolutions, length is 32.
+        # Flattened size = 256 channels * 32 spatial points = 8192
+        self.flatten_size = 256 * 32 
         hidden_dim = min(config['model']['hidden_dim'], 512) 
 
         # --- Lean Decoder ---
@@ -48,14 +47,17 @@ class SurfaceInverseModel(nn.Module):
 
     def forward(self, x):
         features = self.conv_layers(x)
-        features = features.view(-1, self.flatten_size)
+        # Flatten the (Batch, Channels, Spatial) into (Batch, Channels * Spatial)
+        features = features.view(features.size(0), -1) 
         raw_out = self.sigmoid(self.fc_layers(features))
 
         raw_n = raw_out[:, :self.n_asp]
         raw_gaps = raw_out[:, self.n_asp:] 
 
         pred_exponents = 1.0 + raw_n * 2.0 
-        scaled_gaps = raw_gaps * (1.2 * self.max_delta / (self.n_asp - 1))
+        
+        # effectively exiling unused asperities far beyond the physical contact zone.
+        scaled_gaps = raw_gaps * (2.0 * self.max_delta / (self.n_asp - 1))
         
         final_gaps = scaled_gaps.clone()
         final_gaps[:, 0] = 0.0 
