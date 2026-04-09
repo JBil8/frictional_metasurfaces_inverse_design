@@ -22,7 +22,7 @@ def get_theoretical_limits(cfg, device):
     ind = torch.linspace(0, max_d, steps).unsqueeze(0).to(device)
 
     with torch.no_grad():
-        p_max, alpha_max, dp_dalpha_max = phys(h_wall, n_wall, w_wall, ind, k_steepness=1e6)
+        p_max, alpha_max, dp_dalpha_max = phys(h_wall, n_wall, w_wall, ind, k_steepness=1e8)
 
     return {
         "max_pressure": p_max.max().item(),

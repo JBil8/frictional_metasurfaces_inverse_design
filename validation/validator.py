@@ -113,7 +113,7 @@ class UnifiedValidator:
 
             with torch.no_grad():
                 n_pred, h_pred = self.model(nn_input)
-                p_nn, alpha_nn, s_nn = self.phys(h_pred, n_pred, self.gen.t_w, self.gen.indentations, k_steepness=1e6)
+                p_nn, alpha_nn, s_nn = self.phys(h_pred, n_pred, self.gen.t_w, self.gen.indentations, k_steepness=1e8)
 
             if refine:
                 n_ref, h_ref, p_ref, alpha_ref, s_ref = self.refine_prediction(t_alpha, t_p, n_pred, h_pred)
@@ -148,7 +148,7 @@ class UnifiedValidator:
                 h_sorted = h_sorted - h_sorted[:, 0:1]
 
                 # phys returns (Batch, Steps) - usually (1, 500)
-                p_raw, a_raw, _ = self.phys(h_sorted, n_opt, self.gen.t_w, self.gen.indentations, k_steepness=1e6)
+                p_raw, a_raw, _ = self.phys(h_sorted, n_opt, self.gen.t_w, self.gen.indentations, k_steepness=1e8)
                 
                 # Ensure 2D for interpolation
                 p_raw_2d = p_raw.view(1, -1)
@@ -171,7 +171,7 @@ class UnifiedValidator:
         with torch.no_grad():
             h_final, _ = torch.sort(h_opt, dim=1)
             h_final = h_final - h_final[:, 0:1]
-            p_final, alpha_final, s_final = self.phys(h_final, n_opt, self.gen.t_w, self.gen.indentations, k_steepness=1e6)
+            p_final, alpha_final, s_final = self.phys(h_final, n_opt, self.gen.t_w, self.gen.indentations, k_steepness=1e8)
 
         return n_opt, h_final, p_final, alpha_final, s_final
 
@@ -191,7 +191,7 @@ class UnifiedValidator:
 
         with torch.no_grad():
             n_pred, h_pred = self.model(nn_input)
-            p_nn, alpha_nn, s_nn = self.phys(h_pred, n_pred, self.gen.t_w, self.gen.indentations, k_steepness=1e6)
+            p_nn, alpha_nn, s_nn = self.phys(h_pred, n_pred, self.gen.t_w, self.gen.indentations, k_steepness=1e8)
 
         if refine:
             n_ref, h_ref, p_ref, alpha_ref, s_ref = self.refine_prediction(t_alpha, t_p, n_pred, h_pred)

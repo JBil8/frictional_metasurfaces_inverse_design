@@ -89,8 +89,8 @@ def main():
         criterion = CurriculumIntensiveLoss(w_stiff=w_stiff, w_pressure=w_alpha, max_delta=max_d).to(device)
 
         epochs = cfg['training']['epochs']
-        k_start = 1e4
-        k_end = 1e6
+        k_start = 1e6
+        k_end = 1e8
 
         print("Starting training...")
 

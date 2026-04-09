@@ -23,11 +23,11 @@ class TargetGenerator:
 
         # Added explicit k_steepness for hard boundaries
         with torch.no_grad():
-            self.p_max, self.alpha_max, self.s_max = self.phys(h_wall, n_wall, w_wall, self.indentations, k_steepness=1e6)
+            self.p_max, self.alpha_max, self.s_max = self.phys(h_wall, n_wall, w_wall, self.indentations, k_steepness=1e8)
 
         n_cone = torch.ones(1, self.n_asp).to(device) * 1.0
         with torch.no_grad():
-            self.p_min, self.alpha_min, self.s_min = self.phys(h_wall, n_cone, w_wall, self.indentations, k_steepness=1e6)
+            self.p_min, self.alpha_min, self.s_min = self.phys(h_wall, n_cone, w_wall, self.indentations, k_steepness=1e8)
 
         print("[TargetGenerator] Loading dataset for validation sampling...")
         data_path = cfg['data']['path']
@@ -83,7 +83,7 @@ class TargetGenerator:
 
         # CRITICAL FIX: Generate native displacement curves dynamically
         with torch.no_grad():
-            target_pressure, target_alpha, target_stiff = self.phys(gt_h, gt_n, self.t_w, self.indentations, k_steepness=1e6)
+            target_pressure, target_alpha, target_stiff = self.phys(gt_h, gt_n, self.t_w, self.indentations, k_steepness=1e8)
 
         if noise_level > 0:
             noise_s = torch.randn_like(target_stiff) * noise_level * target_stiff.max()
@@ -101,7 +101,7 @@ class TargetGenerator:
         h = h - h[:, 0:1] 
 
         with torch.no_grad():
-            target_pressure, target_alpha, target_stiff = self.phys(h, n, self.t_w, self.indentations, k_steepness=1e6)
+            target_pressure, target_alpha, target_stiff = self.phys(h, n, self.t_w, self.indentations, k_steepness=1e8)
 
         return target_pressure, target_alpha, target_stiff, "Linear (GW Physics)"
     
@@ -140,7 +140,7 @@ class TargetGenerator:
         h = h - h[:, 0:1]
 
         with torch.no_grad():
-            target_pressure, target_alpha, target_stiff = self.phys(h, n, self.t_w, self.indentations, k_steepness=1e6)
+            target_pressure, target_alpha, target_stiff = self.phys(h, n, self.t_w, self.indentations, k_steepness=1e8)
 
         return target_pressure, target_alpha, target_stiff, "Saturating (Bounded Flat Punches)"
 
@@ -156,7 +156,7 @@ class TargetGenerator:
         h = torch.cat([h1, h2], dim=1)
 
         with torch.no_grad():
-            target_pressure, target_alpha, target_stiff = self.phys(h, n, self.t_w, self.indentations, k_steepness=1e6)
+            target_pressure, target_alpha, target_stiff = self.phys(h, n, self.t_w, self.indentations, k_steepness=1e8)
 
         return target_pressure, target_alpha, target_stiff, "Bilinear (Gap Physics)"
 
@@ -168,6 +168,6 @@ class TargetGenerator:
 
         # CRITICAL FIX: Generate native displacement curves dynamically
         with torch.no_grad():
-            target_pressure, target_alpha, target_stiff = self.phys(gt_h, gt_n, self.t_w, self.indentations, k_steepness=1e6)
+            target_pressure, target_alpha, target_stiff = self.phys(gt_h, gt_n, self.t_w, self.indentations, k_steepness=1e8)
 
         return target_pressure, target_alpha, target_stiff, gt_n, gt_h, f"Dataset: {label.capitalize()} (#{idx})"

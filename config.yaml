@@ -22,16 +22,16 @@ training:
   device: "cuda"
   loss_weights:
     w_stiff: 4.0               # Weight for the dP/dAlpha topology & cliffs
-    w_pressure: 1.0            # Weight for the Intensive Pressure anchor
+    w_pressure: 4.0            # Weight for the Intensive Pressure anchor
   scheduler:
     type: "CosineAnnealingLR"  # Ignores validation noise
     eta_min: 1.0e-6            # Minimum learning rate
 
 generation:
   ratios:
-    lhs: 0.30           # Space-filling baseline
-    random_sum: 0.30    # Standard averaged topologies
-    exiled: 0.10        # Teaches the network how to hide unused asperities
-    bimodal: 0.10       # Teaches violent stiffness cliffs
-    wall: 0.10          # 9-asperity simultaneous contact
-    sparse: 0.10        # Sequential multi-step contacts
+    lhs: 0.20           # Space-filling baseline
+    random_sum: 0.20    # Standard averaged topologies
+    exiled: 0.20        # Teaches the network how to hide unused asperities
+    bimodal: 0.20       # Teaches violent stiffness cliffs
+    wall: 0.20          # 9-asperity simultaneous contact
+    sparse: 0.20        # Sequential multi-step contacts

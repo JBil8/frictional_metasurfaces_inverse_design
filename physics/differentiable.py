@@ -28,7 +28,7 @@ class AxisymmetricContactLayer(nn.Module):
         log_k = torch.lgamma(n / 2.0 + 1.0) - torch.lgamma((n + 1.0) / 2.0)
         return self.sqrt_pi * torch.exp(log_k)
 
-    def forward(self, heights, exponents, widths, indentations, k_steepness=1e6):
+    def forward(self, heights, exponents, widths, indentations, k_steepness=1e9):
         h = heights.unsqueeze(2)     
         n = exponents.unsqueeze(2)   
         w = widths.unsqueeze(2)      
