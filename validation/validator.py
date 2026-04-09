@@ -1,8 +1,15 @@
 import sys
 import os
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import matplotlib.pyplot as plt
+import numpy as np
+from torch.utils.data import random_split
+
+# Ensure pathing works when executed from inside the validation folder
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(current_dir, '..'))
-
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
@@ -16,12 +23,7 @@ from utils.normalization import get_theoretical_limits
 from utils.config import load_config
 from physics.differentiable import AxisymmetricContactLayer
 from ml_models.model_mlp import SurfaceInverseModel
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import matplotlib.pyplot as plt
-import numpy as np
-from torch.utils.data import TensorDataset, random_split
+from utils.interpolation import batched_interp1d
 
 class UnifiedValidator:
     def __init__(self, cfg_path="config.yaml"):
@@ -30,24 +32,50 @@ class UnifiedValidator:
         self.cfg = load_config(cfg_path)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # CRITICAL FIX 1: Intensive limits
+        # 1. Establish Intensive Limits
         limits = get_theoretical_limits(self.cfg, self.device)
         self.MAX_P = limits['max_pressure']
         self.MAX_ALPHA = limits['max_alpha']
         self.MAX_S = limits['max_stiff']
 
-        # CRITICAL FIX 2: Physics engine takes full config
+        # 2. Initialize Physics Engine & Model
         self.phys = AxisymmetricContactLayer(cfg=self.cfg).to(self.device)
         self.model = SurfaceInverseModel(self.cfg).to(self.device)
 
         model_name = self.cfg['model']['name']
         if not os.path.exists(model_name):
-            model_name = "../" + model_name
+            model_name = os.path.join("..", model_name)
         print(f"[Validator] Loading model from {model_name}...")
         self.model.load_state_dict(torch.load(model_name, map_location=self.device))
         self.model.eval()
 
         self.gen = TargetGenerator(self.phys, self.cfg, self.device)
+        
+        # 3. Create the global P* grid used for all CNN evaluations
+        self.steps = self.cfg['data']['n_steps']
+        self.p_star_grid = torch.linspace(0, self.MAX_P, self.steps).to(self.device)
+
+    def prepare_nn_input(self, native_p, native_alpha, native_s):
+        """Standardizes a native displacement-based curve for the P*-domain CNN."""
+        # Force inputs to be (1, Steps) to ensure they are 2D for the interp tool
+        p_2d = native_p.view(1, -1)
+        a_2d = native_alpha.view(1, -1)
+        s_2d = native_s.view(1, -1)
+
+        # 1. Align to global P* grid
+        # self.p_star_grid is already 1D, so we leave it as is
+        aligned_alpha = batched_interp1d(self.p_star_grid, p_2d, a_2d, pad_value=-1.0)
+        aligned_s = batched_interp1d(self.p_star_grid, p_2d, s_2d, pad_value=-1.0)
+
+        # 2. Normalize valid regions safely
+        norm_alpha = torch.where(aligned_alpha != -1.0, aligned_alpha / self.MAX_ALPHA, -1.0)
+        norm_s = torch.where(aligned_s != -1.0, aligned_s / self.MAX_S, -1.0)
+        
+        # Ensure p_grid is also (1, Steps) for stacking
+        norm_p = (self.p_star_grid / self.MAX_P).view(1, -1)
+
+        # 3. Stack into (1, 3, Steps)
+        return torch.stack([norm_p, norm_alpha, norm_s], dim=1)
 
     def get_test_set_indices_by_category(self):
         print("[Validator] Reconstructing Test Split to find unseen samples...")
@@ -75,44 +103,43 @@ class UnifiedValidator:
         test_buckets = self.get_test_set_indices_by_category()
 
         for category, indices in test_buckets.items():
-            if len(indices) == 0:
-                continue
-
+            if len(indices) == 0: continue
+            
             idx = np.random.choice(indices)
             print(f"Validating {category.upper()} on Test Sample #{idx}...")
 
-            # Changed unpack names to Intensive properties
             t_p, t_alpha, t_s, gt_n, gt_h, title = self.gen.get_custom_sample(idx, category)
-
-            nn_input = torch.stack([
-                t_p / self.MAX_P,
-                t_alpha / self.MAX_ALPHA,
-                t_s / self.MAX_S
-            ], dim=1)
+            nn_input = self.prepare_nn_input(t_p, t_alpha, t_s)
 
             with torch.no_grad():
                 n_pred, h_pred = self.model(nn_input)
-                p_nn, alpha_nn, s_nn = self.phys(h_pred, n_pred, self.gen.t_w, self.gen.indentations)
+                p_nn, alpha_nn, s_nn = self.phys(h_pred, n_pred, self.gen.t_w, self.gen.indentations, k_steepness=1e6)
 
             if refine:
-                n_ref, h_ref, p_ref, alpha_ref, s_ref = self.refine_prediction(
-                    t_s, n_pred, h_pred, self.gen.indentations)
-
-                self.plot_triple_comparison(t_p, t_s, gt_n, gt_h,
-                                            p_nn, s_nn, n_pred, h_pred,
-                                            p_ref, s_ref, n_ref, h_ref,
+                n_ref, h_ref, p_ref, alpha_ref, s_ref = self.refine_prediction(t_alpha, t_p, n_pred, h_pred)
+                self.plot_triple_comparison(t_p, t_alpha, t_s, gt_n, gt_h,
+                                            p_nn, alpha_nn, s_nn, n_pred, h_pred,
+                                            p_ref, alpha_ref, s_ref, n_ref, h_ref,
                                             f"Test: {category} (#{idx})")
             else:
-                self.plot_comparison(t_p, t_s, gt_n, gt_h, p_nn, s_nn, n_pred, h_pred, f"Test: {category} (#{idx})")
+                self.plot_comparison(t_p, t_alpha, t_s, gt_n, gt_h, p_nn, alpha_nn, s_nn, n_pred, h_pred, f"Test: {category} (#{idx})")
 
-    def refine_prediction(self, target_stiff, n_init, h_init, indent_profile, steps=50):
-        print(f"  > Refinement: Optimizing intensive topology (dF/dA)...")
+    def refine_prediction(self, target_alpha, target_p, n_init, h_init, steps=50):
+        print(f"  > Refinement: Optimizing intensive topology in P* domain...")
 
         n_opt = n_init.clone().detach().requires_grad_(True)
         h_opt = h_init.clone().detach().requires_grad_(True)
 
         optimizer = optim.LBFGS([n_opt, h_opt], lr=0.5, max_iter=20, line_search_fn='strong_wolfe')
-        criterion = nn.MSELoss()
+        
+        # FIX: Force 2D shape (1, Steps)
+        t_p_2d = target_p.view(1, -1)
+        t_a_2d = target_alpha.view(1, -1)
+
+        # Target must be aligned to grid once for the MSE loss
+        t_alpha_aligned = batched_interp1d(self.p_star_grid, t_p_2d, t_a_2d, pad_value=-1.0)
+        target_mask = (t_alpha_aligned != -1.0).float()
+        valid_elements = torch.sum(target_mask) + 1e-8
 
         for i in range(steps):
             def closure():
@@ -120,9 +147,18 @@ class UnifiedValidator:
                 h_sorted, _ = torch.sort(h_opt, dim=1)
                 h_sorted = h_sorted - h_sorted[:, 0:1]
 
-                _, _, s_pred = self.phys(h_sorted, n_opt, self.gen.t_w, indent_profile)
+                # phys returns (Batch, Steps) - usually (1, 500)
+                p_raw, a_raw, _ = self.phys(h_sorted, n_opt, self.gen.t_w, self.gen.indentations, k_steepness=1e6)
+                
+                # Ensure 2D for interpolation
+                p_raw_2d = p_raw.view(1, -1)
+                a_raw_2d = a_raw.view(1, -1)
 
-                loss = criterion(s_pred / self.MAX_S, target_stiff / self.MAX_S)
+                a_aligned = batched_interp1d(self.p_star_grid, p_raw_2d, a_raw_2d, pad_value=-1.0)
+                
+                # Masked Loss
+                squared_err = torch.pow(a_aligned - t_alpha_aligned, 2)
+                loss = torch.sum(squared_err * target_mask) / valid_elements
                 loss.backward()
                 return loss
 
@@ -135,10 +171,33 @@ class UnifiedValidator:
         with torch.no_grad():
             h_final, _ = torch.sort(h_opt, dim=1)
             h_final = h_final - h_final[:, 0:1]
-            n_final = n_opt
-            p_final, alpha_final, s_final = self.phys(h_final, n_final, self.gen.t_w, indent_profile)
+            p_final, alpha_final, s_final = self.phys(h_final, n_opt, self.gen.t_w, self.gen.indentations, k_steepness=1e6)
 
-        return n_final, h_final, p_final, alpha_final, s_final
+        return n_opt, h_final, p_final, alpha_final, s_final
+
+    def validate_designed(self, target_type="linear", refine=False):
+        print(f"[Validator] Generating fresh synthetic target: {target_type}...")
+
+        if target_type == "linear":
+            t_p, t_alpha, t_s, title = self.gen.get_consistent_linear_coulomb()
+        elif target_type == "saturate":
+            t_p, t_alpha, t_s, title = self.gen.get_consistent_saturating()
+        elif target_type == "bilinear":
+            t_p, t_alpha, t_s, title = self.gen.get_consistent_bilinear()
+        else:
+            return
+
+        nn_input = self.prepare_nn_input(t_p, t_alpha, t_s)
+
+        with torch.no_grad():
+            n_pred, h_pred = self.model(nn_input)
+            p_nn, alpha_nn, s_nn = self.phys(h_pred, n_pred, self.gen.t_w, self.gen.indentations, k_steepness=1e6)
+
+        if refine:
+            n_ref, h_ref, p_ref, alpha_ref, s_ref = self.refine_prediction(t_alpha, t_p, n_pred, h_pred)
+            self.plot_triple_comparison(t_p, t_alpha, t_s, None, None, p_nn, alpha_nn, s_nn, n_pred, h_pred, p_ref, alpha_ref, s_ref, n_ref, h_ref, f"Refined: {title}")
+        else:
+            self.plot_comparison(t_p, t_alpha, t_s, None, None, p_nn, alpha_nn, s_nn, n_pred, h_pred, f"Unseen: {title}")
 
     def validate_optimization_baseline(self, target_type="bilinear", n_starts=10):
         print(f"[Baseline] Comparing CNN vs Multi-Start ({n_starts} guesses) for {target_type}...")
@@ -152,19 +211,28 @@ class UnifiedValidator:
         else:
             return
 
-        nn_input = torch.stack([
-            t_p / self.MAX_P,
-            t_alpha / self.MAX_ALPHA,
-            t_s / self.MAX_S
-        ], dim=1)
+        nn_input = self.prepare_nn_input(t_p, t_alpha, t_s)
 
         print("  > Strategy A: CNN Initialization...")
         with torch.no_grad():
             n_cnn, h_cnn = self.model(nn_input)
+        
+        n_A, h_A, p_A, alpha_A, s_A = self.refine_prediction(t_alpha, t_p, n_cnn, h_cnn, steps=100)
+        
+        def compute_p_star_loss(pred_p, pred_alpha):
+            # Flatten both to (1, Steps)
+            t_p_2d = t_p.view(1, -1)
+            t_a_2d = t_alpha.view(1, -1)
+            p_p_2d = pred_p.view(1, -1)
+            p_a_2d = pred_alpha.view(1, -1)
 
-        n_A, h_A, p_A, alpha_A, s_A = self.refine_prediction(t_s, n_cnn, h_cnn, self.gen.indentations, steps=100)
-        loss_A = torch.nn.functional.mse_loss(s_A / self.MAX_S, t_s / self.MAX_S)
-        print(f"    [CNN] Final Stiffness Loss: {loss_A.item():.6f}")
+            t_aligned = batched_interp1d(self.p_star_grid, t_p_2d, t_a_2d, pad_value=-1.0)
+            p_aligned = batched_interp1d(self.p_star_grid, p_p_2d, p_a_2d, pad_value=-1.0)
+            mask = (t_aligned != -1.0).float()
+            return torch.sum(torch.pow(p_aligned - t_aligned, 2) * mask) / (torch.sum(mask) + 1e-8)
+
+        loss_A = compute_p_star_loss(p_A, alpha_A)
+        print(f"    [CNN] Final Alpha Error: {loss_A.item():.6f}")
 
         print(f"  > Strategy B: Multi-Start ({n_starts} random guesses)...")
         best_loss_B = float('inf')
@@ -172,158 +240,123 @@ class UnifiedValidator:
         best_h_B = None
 
         for k in range(n_starts):
-            n_rand = torch.rand(1, self.gen.n_asp).to(self.device) * 7.0 + 1.0
-            h_rand = torch.rand(1, self.gen.n_asp).to(self.device) * self.gen.max_d
+            n_rand = torch.rand(1, self.cfg['physics']['n_asperities']).to(self.device) * 2.0 + 1.0
+            h_rand = torch.rand(1, self.cfg['physics']['n_asperities']).to(self.device) * self.gen.max_d
             h_rand, _ = torch.sort(h_rand, dim=1)
             h_rand = h_rand - h_rand[:, 0:1]
 
             n_probe, h_probe, p_probe, alpha_probe, s_probe = self.refine_prediction(
-                t_s, n_rand, h_rand, self.gen.indentations, steps=20)
+                t_alpha, t_p, n_rand, h_rand, steps=20)
 
-            probe_loss = torch.nn.functional.mse_loss(s_probe / self.MAX_S, t_s / self.MAX_S)
+            probe_loss = compute_p_star_loss(p_probe, alpha_probe)
 
             if probe_loss < best_loss_B:
                 best_loss_B = probe_loss
                 best_n_B = n_probe
                 best_h_B = h_probe
-                print(f"    [Start #{k+1}] New Best Probe Loss: {probe_loss.item():.6f}")
 
         print(f"  > Refining Best Random Candidate...")
-        n_B, h_B, p_B, alpha_B, s_B = self.refine_prediction(t_s, best_n_B, best_h_B, self.gen.indentations, steps=80)
-        loss_B = torch.nn.functional.mse_loss(s_B / self.MAX_S, t_s / self.MAX_S)
-        print(f"    [Multi-Start] Final Stiffness Loss: {loss_B.item():.6f}")
+        n_B, h_B, p_B, alpha_B, s_B = self.refine_prediction(t_alpha, t_p, best_n_B, best_h_B, steps=80)
+        loss_B = compute_p_star_loss(p_B, alpha_B)
+        print(f"    [Multi-Start] Final Alpha Error: {loss_B.item():.6f}")
 
-        fig = plt.figure(figsize=(10, 6))
-        
-        ind_np = self.gen.indentations.cpu().numpy().flatten()
-        plt.plot(ind_np, t_s.cpu().numpy().flatten(), 'k-', lw=3, label="Target (dF/dA)")
-        plt.plot(ind_np, s_A.cpu().detach().numpy().flatten(), 'b--', lw=2, label=f"CNN + Opt (Loss: {loss_A.item():.2e})")
-        plt.plot(ind_np, s_B.cpu().detach().numpy().flatten(), 'r:', lw=2, label=f"Multi-Start (Loss: {loss_B.item():.2e})")
+    def plot_comparison(self, t_p, t_a, t_s, gt_n, gt_h, p_nn, a_nn, s_nn, n_pred, h_pred, title):
+        fig, axs = plt.subplots(1, 2, figsize=(16, 6))
 
-        plt.title(f"Topology Optimization Basin: {title}")
-        plt.xlabel("Indentation [m]")
-        plt.ylabel("Stiffness dF/dA [N/m²]")
-        plt.legend()
-        plt.grid(True, alpha=0.3)
+        def get_plot_ready(p, val):
+            # Force inputs to be exactly 2D: (1, Steps)
+            p_2d = p.view(1, -1)
+            val_2d = val.view(1, -1)
+            aligned = batched_interp1d(self.p_star_grid, p_2d, val_2d, pad_value=-1.0)
+            data = aligned[0].cpu().numpy()
+            data[data == -1.0] = np.nan
+            return data
 
-        os.makedirs("plots", exist_ok=True)
-        plt.savefig(f"plots/multistart_{target_type}.png", dpi=150)
+        p_axis = self.p_star_grid.cpu().numpy()
+        max_p_val = t_p.max().item()
 
-    def validate_designed(self, target_type="linear", refine=False):
-        print(f"[Validator] Generating fresh synthetic target: {target_type}...")
+        axs[0].plot(p_axis, get_plot_ready(t_p, t_a), 'k-', lw=3, label="Target")
+        axs[0].plot(p_axis, get_plot_ready(p_nn, a_nn), 'b--', lw=2, label="Prediction")
+        axs[0].set_xlim(0, max_p_val * 1.1)
+        axs[0].set_title(f"Contact Area vs Load (α vs P*)")
+        axs[0].set_xlabel("Nominal Pressure P*")
+        axs[0].set_ylabel("Contact Fraction α")
+        axs[0].legend()
+        axs[0].grid(True, alpha=0.3)
 
-        if target_type == "linear":
-            t_p, t_alpha, t_s, title = self.gen.get_consistent_linear_coulomb()
-        elif target_type == "saturate":
-            t_p, t_alpha, t_s, title = self.gen.get_consistent_saturating()
-        elif target_type == "bilinear":
-            t_p, t_alpha, t_s, title = self.gen.get_consistent_bilinear()
-
-       
-        nn_input = torch.stack([
-            t_p / self.MAX_P,
-            t_alpha / self.MAX_ALPHA,
-            t_s / self.MAX_S
-        ], dim=1)
-
-        with torch.no_grad():
-            n_pred, h_pred = self.model(nn_input)
-            p_nn, alpha_nn, s_nn = self.phys(h_pred, n_pred, self.gen.t_w, self.gen.indentations)
-
-        if refine:
-            n_ref, h_ref, p_ref, alpha_ref, s_ref = self.refine_prediction(t_s, n_pred, h_pred, self.gen.indentations)
-            self.plot_triple_comparison(t_p, t_s, None, None, p_nn, s_nn, n_pred, h_pred, p_ref, s_ref, n_ref, h_ref, f"Refined: {title}")
-        else:
-            self.plot_comparison(t_p, t_s, None, None, p_nn, s_nn, n_pred, h_pred, f"Unseen: {title}")
-
-    def plot_comparison(self, t_p, t_s, gt_n, gt_h, p_nn, s_nn, n_pred, h_pred, title):
-        fig = plt.figure(figsize=(14, 6))
-
-        ax1 = plt.subplot(1, 2, 1)
-        ind_np = self.gen.indentations.cpu().numpy().flatten()
-        ax1.plot(ind_np, t_s.cpu().numpy().flatten(), 'k-', lw=3, label="Target dF/dA")
-        ax1.plot(ind_np, s_nn.cpu().numpy().flatten(), 'b--', lw=2, label="Prediction dF/dA")
-        ax1.set_title(f"Topology: {title}")
-        ax1.set_xlabel("Indentation [m]")
-        ax1.set_ylabel("Stiffness [N/m²]")
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-
-        ax2 = plt.subplot(1, 2, 2)
         width = 0.35
-        sorted_idx = torch.argsort(h_pred[0])
-        nn_h_sorted = h_pred[0][sorted_idx].cpu().detach().numpy()
+        sorted_idx = torch.argsort(h_pred[0]).cpu().numpy()
+        nn_h_sorted = h_pred[0][sorted_idx].detach().cpu().numpy()
         indices = np.arange(len(nn_h_sorted))
 
         if gt_h is not None:
-            gt_sorted_idx = torch.argsort(gt_h[0])
-            gt_h_sorted = gt_h[0][gt_sorted_idx].cpu().numpy()
-            ax2.bar(indices - width/2, gt_h_sorted, width, label='Ground Truth', color='black', alpha=0.7)
-            ax2.bar(indices + width/2, nn_h_sorted, width, label='Pred', color='blue', alpha=0.7)
+            gt_h_sorted = gt_h[0][torch.argsort(gt_h[0])].cpu().numpy()
+            axs[1].bar(indices - width/2, gt_h_sorted, width, label='Ground Truth', color='k', alpha=0.7)
+            axs[1].bar(indices + width/2, nn_h_sorted, width, label='Pred', color='b', alpha=0.7)
         else:
-            ax2.bar(indices, nn_h_sorted, width, label='Pred (Inferred)', color='blue', alpha=0.7)
+            axs[1].bar(indices, nn_h_sorted, width, label='Pred (Inferred)', color='b', alpha=0.7)
 
-        ax2.set_title("Predicted Topography Structure")
-        ax2.set_xlabel("Asperity Index (Sorted)")
-        ax2.legend()
+        axs[1].set_title("Predicted Topography Structure")
+        axs[1].set_xlabel("Asperity Index")
+        axs[1].legend()
 
         plt.tight_layout()
         os.makedirs("plots", exist_ok=True)
         sname = title.split(":")[1].strip().split(" ")[0].lower() if ":" in title else title.split(" ")[0].lower()
-        save_path = f"plots/val_{sname}.png"
-        plt.savefig(save_path, dpi=150)
-        print(f"[Validator] Saved plot to {save_path}")
+        plt.savefig(f"plots/val_{sname}.png", dpi=150)
         plt.close()
 
-    def plot_triple_comparison(self, t_p, t_s, gt_n, gt_h,
-                               p_nn, s_nn, n_pred, h_pred,
-                               p_ref, s_ref, n_ref, h_ref, title):
-        fig = plt.figure(figsize=(14, 6))
+    def plot_triple_comparison(self, t_p, t_a, t_s, gt_n, gt_h,
+                               p_nn, a_nn, s_nn, n_pred, h_pred,
+                               p_ref, a_ref, s_ref, n_ref, h_ref, title):
+        fig, axs = plt.subplots(1, 2, figsize=(16, 6))
 
-        ax1 = plt.subplot(1, 2, 1)
-        ind_np = self.gen.indentations.cpu().numpy().flatten()
-        ax1.plot(ind_np, t_s.cpu().numpy().flatten(), 'k-', lw=3, label="Target (GT)")
-        ax1.plot(ind_np, s_nn.cpu().numpy().flatten(), 'b--', lw=2, label="Zero-Shot (NN)")
-        ax1.plot(ind_np, s_ref.cpu().numpy().flatten(), 'r:', lw=4, label="Refined (Opt)")
+        def get_plot_ready(p, val):
+            # Force inputs to be exactly 2D: (1, Steps)
+            p_2d = p.view(1, -1)
+            val_2d = val.view(1, -1)
+            aligned = batched_interp1d(self.p_star_grid, p_2d, val_2d, pad_value=-1.0)
+            data = aligned[0].cpu().numpy()
+            data[data == -1.0] = np.nan
+            return data
 
-        ax1.set_title(f"Topology: {title}")
-        ax1.set_xlabel("Indentation [m]")
-        ax1.set_ylabel("Stiffness [N/m²]")
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
+        p_axis = self.p_star_grid.cpu().numpy()
+        max_p_val = t_p.max().item()
 
-        ax2 = plt.subplot(1, 2, 2)
+        axs[0].plot(p_axis, get_plot_ready(t_p, t_a), 'k-', lw=3, label="Target")
+        axs[0].plot(p_axis, get_plot_ready(p_nn, a_nn), 'b--', lw=2, label="Zero-Shot (NN)")
+        axs[0].plot(p_axis, get_plot_ready(p_ref, a_ref), 'r:', lw=4, label="Refined (Opt)")
+        
+        axs[0].set_xlim(0, max_p_val * 1.1)
+        axs[0].set_title(f"Contact Area vs Load (α vs P*)")
+        axs[0].set_xlabel("Nominal Pressure P*")
+        axs[0].set_ylabel("Contact Fraction α")
+        axs[0].legend()
+        axs[0].grid(True, alpha=0.3)
+
         width = 0.25
+        sorted_idx = torch.argsort(h_pred[0]).cpu().numpy()
+        nn_h_sorted = h_pred[0][sorted_idx].detach().cpu().numpy()
+        ref_h_sorted = h_ref[0][sorted_idx].detach().cpu().numpy()
+        indices = np.arange(len(nn_h_sorted))
 
         if gt_h is not None:
-            sorted_idx = torch.argsort(gt_h[0])
-            gt_h_sorted = gt_h[0][sorted_idx].cpu().numpy()
-            nn_h_sorted = h_pred[0][sorted_idx].cpu().detach().numpy()
-            ref_h_sorted = h_ref[0][sorted_idx].cpu().detach().numpy()
-            indices = np.arange(len(gt_h_sorted))
-
-            ax2.bar(indices - width, gt_h_sorted, width, label='Ground Truth', color='black', alpha=0.7)
-            ax2.bar(indices, nn_h_sorted, width, label='NN Pred', color='blue', alpha=0.7)
-            ax2.bar(indices + width, ref_h_sorted, width, label='Refined', color='red', alpha=0.7)
+            gt_h_sorted = gt_h[0][torch.argsort(gt_h[0])].cpu().numpy()
+            axs[1].bar(indices - width, gt_h_sorted, width, label='Ground Truth', color='k', alpha=0.7)
+            axs[1].bar(indices, nn_h_sorted, width, label='NN Pred', color='b', alpha=0.7)
+            axs[1].bar(indices + width, ref_h_sorted, width, label='Refined', color='r', alpha=0.7)
         else:
-            sorted_idx = torch.argsort(h_pred[0])
-            nn_h_sorted = h_pred[0][sorted_idx].cpu().detach().numpy()
-            ref_h_sorted = h_ref[0][sorted_idx].cpu().detach().numpy()
-            indices = np.arange(len(nn_h_sorted))
+            axs[1].bar(indices - width/2, nn_h_sorted, width, label='NN Pred', color='b', alpha=0.7)
+            axs[1].bar(indices + width/2, ref_h_sorted, width, label='Refined', color='r', alpha=0.7)
 
-            ax2.bar(indices - width/2, nn_h_sorted, width, label='NN Pred', color='blue', alpha=0.7)
-            ax2.bar(indices + width/2, ref_h_sorted, width, label='Refined', color='red', alpha=0.7)
-
-        ax2.set_title("Predicted Topography Structure")
-        ax2.set_xlabel("Asperity Index")
-        ax2.legend()
+        axs[1].set_title("Predicted Topography Structure")
+        axs[1].set_xlabel("Asperity Index")
+        axs[1].legend()
 
         plt.tight_layout()
         os.makedirs("plots", exist_ok=True)
         sname = title.split(":")[1].strip().split(" ")[0].lower() if ":" in title else "sample"
-        save_path = f"plots/val_test_{sname}.png"
-        plt.savefig(save_path, dpi=150)
-        print(f"[Validator] Saved plot to {save_path}")
+        plt.savefig(f"plots/val_test_{sname}.png", dpi=150)
         plt.close()
 
 if __name__ == "__main__":

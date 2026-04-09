@@ -21,12 +21,13 @@ class TargetGenerator:
         n_wall = torch.ones(1, self.n_asp).to(device) * 3.0
         w_wall = self.t_w.clone()
 
+        # Added explicit k_steepness for hard boundaries
         with torch.no_grad():
-            self.p_max, self.alpha_max, self.s_max = self.phys(h_wall, n_wall, w_wall, self.indentations)
+            self.p_max, self.alpha_max, self.s_max = self.phys(h_wall, n_wall, w_wall, self.indentations, k_steepness=1e6)
 
         n_cone = torch.ones(1, self.n_asp).to(device) * 1.0
         with torch.no_grad():
-            self.p_min, self.alpha_min, self.s_min = self.phys(h_wall, n_cone, w_wall, self.indentations)
+            self.p_min, self.alpha_min, self.s_min = self.phys(h_wall, n_cone, w_wall, self.indentations, k_steepness=1e6)
 
         print("[TargetGenerator] Loading dataset for validation sampling...")
         data_path = cfg['data']['path']
@@ -42,7 +43,9 @@ class TargetGenerator:
         ranges = {}
         current_idx = 0
         total = self.total_samples
-        order = ['lhs', 'random_sum', 'single', 'wall', 'sparse', 'switch']
+        
+        # CRITICAL FIX: Updated to match the new config.yaml generators
+        order = ['lhs', 'random_sum', 'exiled', 'bimodal', 'wall', 'sparse']
 
         for key in order:
             if key not in ratios:
@@ -74,19 +77,17 @@ class TargetGenerator:
 
         print(f"  > Fetching '{category}' sample at global index {idx}...")
 
-        x_sample = self.data['x'][idx].unsqueeze(0).to(self.device)
         y_sample = self.data['y'][idx].unsqueeze(0).to(self.device)
+        gt_n = y_sample[:, :self.n_asp]
+        gt_h = y_sample[:, self.n_asp:]
 
-        target_pressure = x_sample[:, 0, :]
-        target_alpha = x_sample[:, 1, :]
-        target_stiff = x_sample[:, 2, :] # CRITICAL: Extract Stiffness
+        # CRITICAL FIX: Generate native displacement curves dynamically
+        with torch.no_grad():
+            target_pressure, target_alpha, target_stiff = self.phys(gt_h, gt_n, self.t_w, self.indentations, k_steepness=1e6)
 
         if noise_level > 0:
             noise_s = torch.randn_like(target_stiff) * noise_level * target_stiff.max()
             target_stiff += noise_s
-
-        gt_n = y_sample[:, :self.n_asp]
-        gt_h = y_sample[:, self.n_asp:]
 
         return target_pressure, target_alpha, target_stiff, gt_n, gt_h, f"Dataset: {category.capitalize()} (#{offset})"
 
@@ -100,46 +101,31 @@ class TargetGenerator:
         h = h - h[:, 0:1] 
 
         with torch.no_grad():
-            target_pressure, target_alpha, target_stiff = self.phys(h, n, self.t_w, self.indentations)
+            target_pressure, target_alpha, target_stiff = self.phys(h, n, self.t_w, self.indentations, k_steepness=1e6)
 
         return target_pressure, target_alpha, target_stiff, "Linear (GW Physics)"
     
     def get_synthetic_sigmoid(self):
-        """
-        Creates a purely synthetic target curve where P follows a sigmoid 
-        relative to alpha. Note: No ground-truth parameters exist for this.
-        """
-        # Create a normalized step axis [0, 1] to map to your indentations
         steps = torch.linspace(0, 1, self.n_steps).to(self.device)
-        
-        # 1. Define Alpha (Contact Fraction)
-        # Let it grow smoothly up to a maximum of 40% contact
         t_alpha = 0.4 * (steps ** 1.5) 
-        
-        # 2. Define Pressure (P) as a Sigmoid of Alpha
-        # Target roughly 50% of the theoretical maximum pressure capacity
         P_max = self.p_max.max() * 0.5 
         
-        k = 25.0       # Steepness of the switch
-        alpha_0 = 0.2  # Midpoint of the switch (triggers at 20% contact)
+        k = 25.0       
+        alpha_0 = 0.2  
         
         raw_sig = torch.sigmoid(k * (t_alpha - alpha_0))
         sig_init = torch.sigmoid(torch.tensor([-k * alpha_0])).to(self.device)
         
-        # Shift and scale so P strictly starts at 0
         t_p = P_max * (raw_sig - sig_init) 
         
-        # 3. Calculate Target Stiffness (dP/dAlpha) numerically
         t_s = torch.zeros_like(t_p)
         dp = torch.diff(t_p)
         da = torch.diff(t_alpha)
         
-        # Prevent division by zero
         valid = da > 1e-8
         t_s[1:][valid] = dp[valid] / da[valid]
         t_s[0] = t_s[1] 
         
-        # Add batch dimensions
         t_p = t_p.unsqueeze(0)
         t_alpha = t_alpha.unsqueeze(0)
         t_s = t_s.unsqueeze(0)
@@ -147,7 +133,6 @@ class TargetGenerator:
         return t_p, t_alpha, t_s, "Synthetic Sigmoid Switch"
 
     def get_consistent_saturating(self):
-        # CRITICAL FIX: Limit exponent to 3.0 to match the new restricted physical limits
         n = torch.ones(1, self.n_asp).to(self.device) * 3.0
         h_vals = torch.rand(1, self.n_asp).to(self.device)
         h = h_vals * (0.25 * self.max_d)
@@ -155,14 +140,13 @@ class TargetGenerator:
         h = h - h[:, 0:1]
 
         with torch.no_grad():
-            target_pressure, target_alpha, target_stiff = self.phys(h, n, self.t_w, self.indentations)
+            target_pressure, target_alpha, target_stiff = self.phys(h, n, self.t_w, self.indentations, k_steepness=1e6)
 
         return target_pressure, target_alpha, target_stiff, "Saturating (Bounded Flat Punches)"
 
     def get_consistent_bilinear(self):
         n = torch.ones(1, self.n_asp).to(self.device) * 3.0
         
-        # Determine half of the asperities dynamically
         half_n = self.n_asp // 2
         rest_n = self.n_asp - half_n
         
@@ -172,19 +156,18 @@ class TargetGenerator:
         h = torch.cat([h1, h2], dim=1)
 
         with torch.no_grad():
-            target_pressure, target_alpha, target_stiff = self.phys(h, n, self.t_w, self.indentations)
+            target_pressure, target_alpha, target_stiff = self.phys(h, n, self.t_w, self.indentations, k_steepness=1e6)
 
         return target_pressure, target_alpha, target_stiff, "Bilinear (Gap Physics)"
 
     def get_custom_sample(self, idx, label="Custom"):
-        x_sample = self.data['x'][idx].unsqueeze(0).to(self.device)
         y_sample = self.data['y'][idx].unsqueeze(0).to(self.device)
-
-        target_pressure = x_sample[:, 0, :]
-        target_alpha = x_sample[:, 1, :]
-        target_stiff = x_sample[:, 2, :] # CRITICAL: Extract Stiffness
         
         gt_n = y_sample[:, :self.n_asp]
         gt_h = y_sample[:, self.n_asp:]
+
+        # CRITICAL FIX: Generate native displacement curves dynamically
+        with torch.no_grad():
+            target_pressure, target_alpha, target_stiff = self.phys(gt_h, gt_n, self.t_w, self.indentations, k_steepness=1e6)
 
         return target_pressure, target_alpha, target_stiff, gt_n, gt_h, f"Dataset: {label.capitalize()} (#{idx})"
