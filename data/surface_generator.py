@@ -203,7 +203,7 @@ if __name__ == "__main__":
     h_ceiling = torch.zeros(1, n_asp).to(device)
     
     with torch.no_grad():
-        P_bound, _, _ = phys(h_ceiling, n_ceiling, t_w, indentations, k_steepness=1e8)
+        P_bound, _, _ = phys(h_ceiling, n_ceiling, t_w, indentations, k_steepness=1e5)
         global_P_max = P_bound[0, -1].item()
     
     print(f"Global P*_max established at: {global_P_max:.6f}")
@@ -233,7 +233,7 @@ if __name__ == "__main__":
             batch_tw = t_w.repeat(current_batch, 1)
 
             # Generate native curves in displacement space
-            P_native, alpha_native, stiff_native = phys(batch_h, batch_n, batch_tw, batch_ind, k_steepness=1e8)
+            P_native, alpha_native, stiff_native = phys(batch_h, batch_n, batch_tw, batch_ind, k_steepness=1e5)
             
             P_np = P_native.cpu().numpy()
             alpha_np = alpha_native.cpu().numpy()

@@ -89,8 +89,8 @@ def main():
         criterion = CurriculumIntensiveLoss(w_stiff=w_stiff, w_pressure=w_alpha, max_delta=max_d).to(device)
 
         epochs = cfg['training']['epochs']
-        k_start = 1e6
-        k_end = 1e8
+        k_start = 1e2
+        k_end = 1e5
 
         print("Starting training...")
 
@@ -180,7 +180,7 @@ def main():
                         target_alpha=val_target_alpha,
                         pred_params=torch.cat([vn, vh], dim=1),
                         target_params=vy,
-                        lambda_param=0.0  
+                        lambda_param=lambda_param  
                     )
                     
                     val_loss_accum += val_batch_loss.item()

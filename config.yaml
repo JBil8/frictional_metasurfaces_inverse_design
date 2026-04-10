@@ -3,7 +3,7 @@ experiment_name: "Asperity_Inverse_Design_v5_P_Star"
 physics:
   n_asperities: 9              # CRITICAL: MUST be a perfect square (4, 9, 16)
   max_delta_ratio: 0.1         # Elastic regime limit
-  radius: 0.001                # STRICT PHYSICAL SCALE: 1 mm
+  radius: 1.0                   # Dimensionless 
   E_star: 1.0                  # Dimensionless scaling enabled
 
 data:
@@ -16,8 +16,8 @@ model:
   name: "model_best_unitcell.pth"
 
 training:
-  batch_size: 256
-  epochs: 300
+  batch_size: 4096
+  epochs: 200
   learning_rate: 0.001
   device: "cuda"
   loss_weights:

@@ -6,7 +6,7 @@ class CurriculumIntensiveLoss(nn.Module):
         super().__init__()
         self.w_stiff = w_stiff
         self.w_alpha = w_pressure 
-        self.w_bounds = w_bounds  # The "Fear" Reducer
+        self.w_bounds = w_bounds 
         self.max_delta = max_delta
 
     def forward(self, pred_stiff, target_stiff, pred_alpha, target_alpha, pred_params, target_params, lambda_param=0.0):
@@ -27,7 +27,7 @@ class CurriculumIntensiveLoss(nn.Module):
 
         # Build the composite weight map
         # Physics gets 1.0 multiplier. Boundary violations get w_bounds (e.g., 0.1) multiplier.
-        mask_weights = overlap_mask + (overshoot_mask * self.w_bounds) + (undershoot_mask * self.w_bounds)
+        mask_weights = overlap_mask +  (undershoot_mask * self.w_bounds)
         valid_elements = torch.sum(mask_weights) + 1e-8 
 
         # ---------------------------------------------------------
@@ -43,8 +43,7 @@ class CurriculumIntensiveLoss(nn.Module):
         # ---------------------------------------------------------
         # 3. OVERLAP-ONLY GRADIENT (SLOPE) LOSS
         # ---------------------------------------------------------
-        # We ONLY calculate slopes where BOTH curves exist physically.
-        # Calculating the slope between a physical value and a -1.0 pad creates massive artificial noise.
+        # Calculate slopes only where BOTH curves exist physically
         diff_pred = torch.diff(pred_stiff, dim=2)
         diff_target = torch.diff(target_stiff, dim=2)
 

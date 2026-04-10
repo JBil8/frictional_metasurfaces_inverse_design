@@ -33,10 +33,22 @@ class UnifiedValidator:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # 1. Establish Intensive Limits
-        limits = get_theoretical_limits(self.cfg, self.device)
-        self.MAX_P = limits['max_pressure']
-        self.MAX_ALPHA = limits['max_alpha']
-        self.MAX_S = limits['max_stiff']
+        print("[Validator] Loading dataset for exact normalization limits...")
+        data_path = self.cfg['data']['path']
+        if not os.path.exists(data_path):
+            data_path = os.path.join("..", data_path)
+            
+        data = torch.load(data_path, map_location=self.device)
+        X = data["x"]
+        
+        self.MAX_P = data["p_star_max"]
+        
+        valid_alpha = X[:, 1, :][X[:, 1, :] != -1.0]
+        valid_stiff = X[:, 2, :][X[:, 2, :] != -1.0]
+        self.MAX_ALPHA = valid_alpha.max().item()
+        self.MAX_S = valid_stiff.max().item()
+        
+        print(f"  > P_max: {self.MAX_P:.4e}, Alpha_max: {self.MAX_ALPHA:.4e}, S_max: {self.MAX_S:.4e}")
 
         # 2. Initialize Physics Engine & Model
         self.phys = AxisymmetricContactLayer(cfg=self.cfg).to(self.device)
@@ -113,7 +125,7 @@ class UnifiedValidator:
 
             with torch.no_grad():
                 n_pred, h_pred = self.model(nn_input)
-                p_nn, alpha_nn, s_nn = self.phys(h_pred, n_pred, self.gen.t_w, self.gen.indentations, k_steepness=1e8)
+                p_nn, alpha_nn, s_nn = self.phys(h_pred, n_pred, self.gen.t_w, self.gen.indentations, k_steepness=1e5)
 
             if refine:
                 n_ref, h_ref, p_ref, alpha_ref, s_ref = self.refine_prediction(t_alpha, t_p, n_pred, h_pred)
@@ -148,7 +160,7 @@ class UnifiedValidator:
                 h_sorted = h_sorted - h_sorted[:, 0:1]
 
                 # phys returns (Batch, Steps) - usually (1, 500)
-                p_raw, a_raw, _ = self.phys(h_sorted, n_opt, self.gen.t_w, self.gen.indentations, k_steepness=1e8)
+                p_raw, a_raw, _ = self.phys(h_sorted, n_opt, self.gen.t_w, self.gen.indentations, k_steepness=1e5)
                 
                 # Ensure 2D for interpolation
                 p_raw_2d = p_raw.view(1, -1)
@@ -171,7 +183,7 @@ class UnifiedValidator:
         with torch.no_grad():
             h_final, _ = torch.sort(h_opt, dim=1)
             h_final = h_final - h_final[:, 0:1]
-            p_final, alpha_final, s_final = self.phys(h_final, n_opt, self.gen.t_w, self.gen.indentations, k_steepness=1e8)
+            p_final, alpha_final, s_final = self.phys(h_final, n_opt, self.gen.t_w, self.gen.indentations, k_steepness=1e5)
 
         return n_opt, h_final, p_final, alpha_final, s_final
 
@@ -191,7 +203,7 @@ class UnifiedValidator:
 
         with torch.no_grad():
             n_pred, h_pred = self.model(nn_input)
-            p_nn, alpha_nn, s_nn = self.phys(h_pred, n_pred, self.gen.t_w, self.gen.indentations, k_steepness=1e8)
+            p_nn, alpha_nn, s_nn = self.phys(h_pred, n_pred, self.gen.t_w, self.gen.indentations, k_steepness=1e5)
 
         if refine:
             n_ref, h_ref, p_ref, alpha_ref, s_ref = self.refine_prediction(t_alpha, t_p, n_pred, h_pred)
