@@ -22,6 +22,7 @@ class AxisymmetricContactLayer(nn.Module):
         
         self.cell_size = 4.0 * a_max
         self.nominal_area = (np.sqrt(self.n_asp) * self.cell_size) ** 2
+        self.L = float(np.sqrt(self.nominal_area))
         print(f"[Physics Engine] Global Domain Locked. Nominal Area = {self.nominal_area:.2e} m^2")
 
     def kappa_torch(self, n):
@@ -61,16 +62,13 @@ class AxisymmetricContactLayer(nn.Module):
         dLoad_dDelta_i = (((n + 1.0) / (n * safe_delta)) * load_i) * contact_weight
 
         # 5. Intensive Properties
-        nominal_pressure = load_i.sum(dim=1) / self.nominal_area
+        nominal_pressure = load_i.sum(dim=1) / (self.nominal_area * self.E)
         contact_fraction = area_i.sum(dim=1) / self.nominal_area
         
-        dP_dDelta = dLoad_dDelta_i.sum(dim=1) / self.nominal_area
+        dP_dDelta = dLoad_dDelta_i.sum(dim=1) / (self.nominal_area * self.E)
         dAlpha_dDelta = dArea_dDelta_i.sum(dim=1) / self.nominal_area
 
-        dP_dAlpha = torch.where(
-            dAlpha_dDelta > self.epsilon, 
-            dP_dDelta / (dAlpha_dDelta + self.epsilon), 
-            torch.zeros_like(dP_dDelta)
-        )
+        safe_dAlpha_dDelta = torch.clamp(dAlpha_dDelta, min=self.epsilon)
+        dP_dAlpha = dP_dDelta / safe_dAlpha_dDelta
 
         return nominal_pressure, contact_fraction, dP_dAlpha

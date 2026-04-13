@@ -92,7 +92,7 @@ class TargetGenerator:
         return target_pressure, target_alpha, target_stiff, gt_n, gt_h, f"Dataset: {category.capitalize()} (#{offset})"
 
     def get_consistent_linear_coulomb(self):
-        n = torch.ones(1, self.n_asp).to(self.device) * 2.0 
+        n = torch.ones(1, self.n_asp).to(self.device) * 2.1
         h_dist = torch.distributions.Exponential(rate=10.0)
         h_vals = h_dist.sample((1, self.n_asp)).to(self.device)
 
@@ -145,13 +145,13 @@ class TargetGenerator:
         return target_pressure, target_alpha, target_stiff, "Saturating (Bounded Flat Punches)"
 
     def get_consistent_bilinear(self):
-        n = torch.ones(1, self.n_asp).to(self.device) * 3.0
+        n = torch.ones(1, self.n_asp).to(self.device) * 2.5
         
         half_n = self.n_asp // 2
         rest_n = self.n_asp - half_n
         
         h1 = torch.zeros(1, half_n).to(self.device)
-        h2 = torch.ones(1, rest_n).to(self.device) * (0.4 * self.max_d)
+        h2 = torch.ones(1, rest_n).to(self.device) * (0.8 * self.max_d)
 
         h = torch.cat([h1, h2], dim=1)
 

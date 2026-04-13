@@ -21,7 +21,7 @@ module load cuda         # Load CUDA
 source .venv/bin/activate
 
 # 1. Generate Data (Only if it doesn't exist yet)
-echo "Generating 500k samples..."
+echo "Generating samples..."
 python -m data.surface_generator
 
 # 2. Train Model
