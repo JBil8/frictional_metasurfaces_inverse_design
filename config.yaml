@@ -13,10 +13,10 @@ data:
 
 model:
   hidden_dim: 256
-  name: "model_best_unitcell.pth"
+  name: "model_best_unitcell_annealing.pth"
 
 training:
-  batch_size: 4096
+  batch_size: 1024
   epochs: 200
   learning_rate: 0.001
   device: "cuda"
@@ -29,9 +29,9 @@ training:
 
 generation:
   ratios:
-    lhs: 0.20           # Space-filling baseline
-    random_sum: 0.20    # Standard averaged topologies
-    exiled: 0.20        # Teaches the network how to hide unused asperities
-    bimodal: 0.20       # Teaches violent stiffness cliffs
-    wall: 0.20          # 9-asperity simultaneous contact
-    sparse: 0.20        # Sequential multi-step contacts
+    lhs: 0.16          # Space-filling baseline
+    random_sum: 0.16    # Standard averaged topologies
+    exiled: 0.16        # Teaches the network how to hide unused asperities
+    bimodal: 0.16       # Teaches violent stiffness cliffs
+    wall: 0.16          # 9-asperity simultaneous contact
+    sparse: 0.16        # Sequential multi-step contacts
