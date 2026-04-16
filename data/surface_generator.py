@@ -137,12 +137,16 @@ class SurfaceGenerator:
         return n, h
 
     def mix_dataset(self, total_samples):
-        # We reserve 10% for Exiled, 10% for Bimodal, 10% for Walls, 10% for Sparse
-        n_exiled = int(0.10 * total_samples)
-        n_bimodal = int(0.10 * total_samples)
-        n_wall = int(0.10 * total_samples)
-        n_sparse = int(0.10 * total_samples)
-        n_rnd = int(0.30 * total_samples) 
+        # Extract ratios from config
+        ratios = self.cfg['generation']['ratios']
+        
+        n_exiled = int(ratios['exiled'] * total_samples)
+        n_bimodal = int(ratios['bimodal'] * total_samples)
+        n_wall = int(ratios['wall'] * total_samples)
+        n_sparse = int(ratios['sparse'] * total_samples)
+        n_rnd = int(ratios['random_sum'] * total_samples) 
+        
+        # LHS absorbs the remainder to guarantee exactly total_samples are generated
         n_lhs = total_samples - (n_exiled + n_bimodal + n_wall + n_sparse + n_rnd)
 
         print("--- Mixing Dataset Sub-Domains ---")

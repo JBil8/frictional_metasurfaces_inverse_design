@@ -28,6 +28,6 @@ python -m data.surface_generator
 echo "Starting Training on L40S..."
 python main_inverse_design.py
 
-# 3. Evaluate Model
-echo "Evaluating Model..."
-python validation/validator.py
+# # 3. Evaluate Model
+# echo "Evaluating Model..."
+# python validation/validator.py

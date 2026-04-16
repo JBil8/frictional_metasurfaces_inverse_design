@@ -26,14 +26,15 @@ class SurfaceInverseModel(nn.Module):
             nn.GELU(),
         )
 
-        # N_steps = 500. After 4 strided (x2) convolutions, length is 32.
-        # Flattened size = 256 channels * 32 spatial points = 8192
-        self.flatten_size = 256 * 32 
+        # The Silver Bullet: Compress the remaining spatial dimension to 1
+        self.global_pool = nn.AdaptiveAvgPool1d(1)
+
         hidden_dim = min(config['model']['hidden_dim'], 512) 
 
-        # --- Lean Decoder ---
+        # --- Decoder ---
         self.fc_layers = nn.Sequential(
-            nn.Linear(self.flatten_size, hidden_dim),
+            # Input is now strictly 256, regardless of sequence length
+            nn.Linear(256, hidden_dim),
             nn.ReLU(),
             nn.Dropout(0.1),
 
@@ -47,8 +48,9 @@ class SurfaceInverseModel(nn.Module):
 
     def forward(self, x):
         features = self.conv_layers(x)
-        # Flatten the (Batch, Channels, Spatial) into (Batch, Channels * Spatial)
-        features = features.view(features.size(0), -1) 
+        features = self.global_pool(features)     # Shape: (Batch, 256, 1)
+        features = features.view(features.size(0), -1) # Shape: (Batch, 256)
+        
         raw_out = self.sigmoid(self.fc_layers(features))
 
         raw_n = raw_out[:, :self.n_asp]
@@ -56,7 +58,6 @@ class SurfaceInverseModel(nn.Module):
 
         pred_exponents = 1.0 + raw_n * 2.0 
         
-        # effectively exiling unused asperities far beyond the physical contact zone.
         scaled_gaps = raw_gaps * (2.0 * self.max_delta / (self.n_asp - 1))
         
         final_gaps = scaled_gaps.clone()
