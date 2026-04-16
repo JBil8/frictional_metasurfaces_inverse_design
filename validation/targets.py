@@ -91,19 +91,43 @@ class TargetGenerator:
 
         return target_pressure, target_alpha, target_stiff, gt_n, gt_h, f"Dataset: {category.capitalize()} (#{offset})"
 
+    # def get_consistent_linear_coulomb(self):
+    #     n = torch.ones(1, self.n_asp).to(self.device) * 2.1
+    #     h_dist = torch.distributions.Exponential(rate=10.0)
+    #     h_vals = h_dist.sample((1, self.n_asp)).to(self.device)
+
+    #     h = h_vals * (0.5 * self.max_d)
+    #     h, _ = torch.sort(h, dim=1)
+    #     h = h - h[:, 0:1] 
+
+    #     with torch.no_grad():
+    #         target_pressure, target_alpha, target_stiff = self.phys(h, n, self.t_w, self.indentations, k_steepness=1e5)
+
+    #     return target_pressure, target_alpha, target_stiff, "Linear (GW Physics)"
+
     def get_consistent_linear_coulomb(self):
-        n = torch.ones(1, self.n_asp).to(self.device) * 2.1
-        h_dist = torch.distributions.Exponential(rate=10.0)
-        h_vals = h_dist.sample((1, self.n_asp)).to(self.device)
-
-        h = h_vals * (0.5 * self.max_d)
-        h, _ = torch.sort(h, dim=1)
-        h = h - h[:, 0:1] 
-
-        with torch.no_grad():
-            target_pressure, target_alpha, target_stiff = self.phys(h, n, self.t_w, self.indentations, k_steepness=1e5)
-
-        return target_pressure, target_alpha, target_stiff, "Linear (GW Physics)"
+        """
+        Generates a mathematically perfect linear target (Archard's Law).
+        Instead of relying on a discrete 9-asperity GW approximation,
+        we explicitly define a straight line in the intensive property domain.
+        """
+        # Choose bounds that fit nicely within your model's normalization limits
+        # Based on your previous plots, P* up to ~0.008 and alpha up to ~0.08 is reasonable.
+        max_p = 0.0005
+        max_alpha = 0.01
+        
+        # 1. Define perfect linear arrays
+        target_pressure = torch.linspace(0, max_p, self.n_steps).unsqueeze(0).to(self.device)
+        target_alpha = torch.linspace(0, max_alpha, self.n_steps).unsqueeze(0).to(self.device)
+        
+        # 2. Stiffness of a straight line is just the constant slope
+        constant_stiffness = max_p / max_alpha
+        target_stiff = torch.ones_like(target_pressure) * constant_stiffness
+        
+        # At exactly P=0, contact is a singularity. We can leave it as the constant slope 
+        # or safely let the CNN handle it. A constant array is mathematically exact here.
+        
+        return target_pressure, target_alpha, target_stiff, "Strictly Linear (Archard Target)"
     
     def get_synthetic_sigmoid(self):
         steps = torch.linspace(0, 1, self.n_steps).to(self.device)
@@ -133,7 +157,7 @@ class TargetGenerator:
         return t_p, t_alpha, t_s, "Synthetic Sigmoid Switch"
 
     def get_consistent_saturating(self):
-        n = torch.ones(1, self.n_asp).to(self.device) * 3.0
+        n = torch.ones(1, self.n_asp).to(self.device) * 1.5
         h_vals = torch.rand(1, self.n_asp).to(self.device)
         h = h_vals * (0.25 * self.max_d)
         h, _ = torch.sort(h, dim=1)
@@ -145,7 +169,7 @@ class TargetGenerator:
         return target_pressure, target_alpha, target_stiff, "Saturating (Bounded Flat Punches)"
 
     def get_consistent_bilinear(self):
-        n = torch.ones(1, self.n_asp).to(self.device) * 2.5
+        n = torch.ones(1, self.n_asp).to(self.device) * 3.0
         
         half_n = self.n_asp // 2
         rest_n = self.n_asp - half_n

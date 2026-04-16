@@ -130,6 +130,7 @@ class UnifiedValidator:
             if not indices: continue
 
             idx = np.random.choice(indices)
+            idx += 1
             print(f"\nValidating {category.upper()} on Test Sample #{idx}...")
 
             # 1. Get Target Data (now explicitly using t_s and gt_n)
@@ -279,8 +280,8 @@ class UnifiedValidator:
 
         # [1,1] Exponents
         axs[1,1].axhline(1.0, color='gray', ls=':', alpha=0.5); axs[1,1].axhline(2.0, color='gray', ls='--', alpha=0.5)
-        plot_stem(axs[1,1], idx - 0.1, n_B[0][s_idx_B].cpu().numpy(), C_MS, '^', 'Multi-Start')
-        plot_stem(axs[1,1], idx + 0.1, n_A[0][s_idx_A].cpu().numpy(), C_CNN, 's', 'CNN Init')
+        plot_stem(axs[1,1], idx - 0.1, n_B[0][s_idx_B].detach().numpy(), C_MS, '^', 'Multi-Start')
+        plot_stem(axs[1,1], idx + 0.1, n_A[0][s_idx_A].detach().numpy(), C_CNN, 's', 'CNN Init')
         axs[1,1].set(title="Optimized Exponents", xlabel="Asperity Index", ylabel="n [-]", ylim=(0.8, 3.2))
         axs[1,1].legend(loc='lower right', fontsize='small')
 
@@ -472,11 +473,11 @@ if __name__ == "__main__":
     val = UnifiedValidator("config.yaml")
     set_seed(17)
     
-    val.validate_on_test_set()
-    val.validate_designed(target_type="linear", refine=True)
-    val.validate_designed(target_type="saturate", refine=True)
-    val.validate_designed(target_type="bilinear", refine=True)
+    # val.validate_on_test_set()
+    # val.validate_designed(target_type="linear", refine=True)
+    # val.validate_designed(target_type="saturate", refine=True)
+    # val.validate_designed(target_type="bilinear", refine=True)
     
-    val.validate_optimization_baseline(target_type="saturate")
-    val.validate_optimization_baseline(target_type="bilinear")
+    # val.validate_optimization_baseline(target_type="saturate")
+    # val.validate_optimization_baseline(target_type="bilinear")
     val.validate_optimization_baseline(target_type="linear")
