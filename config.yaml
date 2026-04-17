@@ -16,16 +16,16 @@ model:
   name: "model_best_unitcell_annealing.pth"
 
 training:
-  batch_size: 1024
-  epochs: 200
-  learning_rate: 0.001
+  batch_size: 512 #1024
+  epochs: 100
+  learning_rate: 0.0005
   device: "cuda"
   loss_weights:
-    w_stiff: 4.0               # Weight for the dP/dAlpha topology & cliffs
+    w_stiff: 2.0               # Weight for the dP/dAlpha topology & cliffs
     w_pressure: 4.0            # Weight for the Intensive Pressure anchor
   scheduler:
     type: "CosineAnnealingLR"  # Ignores validation noise
-    eta_min: 1.0e-6            # Minimum learning rate
+    eta_min: 1.0e-4            # Minimum learning rate
 
 generation:
   ratios:

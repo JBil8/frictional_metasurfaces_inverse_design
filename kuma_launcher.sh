@@ -10,7 +10,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8      # 16 CPU cores to feed the GPU data
 #SBATCH --mem=32G               # Request 64GB RAM (Safe for 500k samples)
-#SBATCH --time=02:00:00         # 4 hours (adjust if needed)
+#SBATCH --time=01:00:00         # 4 hours (adjust if needed)
 
 # --- Environment Setup ---
 module purge
@@ -21,13 +21,13 @@ module load cuda         # Load CUDA
 source .venv/bin/activate
 
 # 1. Generate Data (Only if it doesn't exist yet)
-echo "Generating samples..."
-python -m data.surface_generator
+# echo "Generating samples..."
+# python -m data.surface_generator
 
 # 2. Train Model
 echo "Starting Training on L40S..."
 python main_inverse_design.py
 
 # # 3. Evaluate Model
-# echo "Evaluating Model..."
-# python validation/validator.py
+echo "Evaluating Model..."
+python validation/validator.py

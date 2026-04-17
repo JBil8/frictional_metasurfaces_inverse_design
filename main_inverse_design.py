@@ -19,7 +19,7 @@ def main():
     device = torch.device(cfg['training']['device'] if torch.cuda.is_available() else "cpu")
     n_asperities = cfg['physics']['n_asperities']
     
-    early_stopping = EarlyStopping(patience=50, verbose=True, delta=1e-5)
+    early_stopping = EarlyStopping(patience=60, verbose=True, delta=1e-5)
     mlflow.set_experiment(cfg['experiment_name'])
 
     with mlflow.start_run():
@@ -99,8 +99,9 @@ def main():
             train_loss_accum = 0.0
             
             # --- DUAL SCHEDULE ---
-            progress = 4 *epoch / epochs 
-            lambda_param = max(0.0, 1.0 - progress)
+            scale_lambda = 0.01
+            progress = 2 *epoch / epochs 
+            lambda_param = max(0.0, scale_lambda * (1.0 - progress))
             current_k =   min(k_start * (k_end / k_start) ** progress, k_end)
 
             mlflow.log_metric("k_steepness", current_k, step=epoch)
