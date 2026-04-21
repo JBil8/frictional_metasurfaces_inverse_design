@@ -445,16 +445,15 @@ if __name__ == "__main__":
     set_seed(42)
     
     # Generate Figure 2 for the paper
-    val.plot_test_set_overview()
+    # val.plot_test_set_overview()
     
     # Optional baseline executions
-    # val.validate_optimization_baseline(target_type="quadratic")
-    val.validate_on_test_set()
-    # val.validate_designed(target_type="linear", refine=True)
-    # val.validate_designed(target_type="saturate", refine=True)
-    # val.validate_designed(target_type="bilinear", refine=True)
+    # val.validate_on_test_set()
+    val.validate_designed(target_type="linear", refine=True)
+    val.validate_designed(target_type="saturate", refine=True)
+    val.validate_designed(target_type="bilinear", refine=True)
     
-    # val.validate_optimization_baseline(target_type="saturate")
-    # val.validate_optimization_baseline(target_type="bilinear")
-    # val.validate_optimization_baseline(target_type="linear")
-    # val.validate_optimization_baseline(target_type="quadratic")
+    val.validate_optimization_baseline(target_type="saturate")
+    val.validate_optimization_baseline(target_type="bilinear")
+    val.validate_optimization_baseline(target_type="linear")
+    val.validate_optimization_baseline(target_type="quadratic")

@@ -13,7 +13,7 @@ data:
 
 model:
   hidden_dim: 512 #256
-  name: "model_best_unitcell_annealing_no_lambda.pth"
+  name: "model_best_unitcell_200k.pth"
 
 training:
   batch_size: 512 #1024

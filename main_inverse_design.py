@@ -18,9 +18,9 @@ def main():
     cfg = load_config("config.yaml")
     device = torch.device(cfg['training']['device'] if torch.cuda.is_available() else "cpu")
     n_asperities = cfg['physics']['n_asperities']
-    patience = cfg['training']['early_stopping_patience']
+    patience = cfg['training']['patience']
     
-    early_stopping = EarlyStopping(patience=50, verbose=True, delta=1e-5)
+    early_stopping = EarlyStopping(patience=patience, verbose=True, delta=1e-5)
     mlflow.set_experiment(cfg['experiment_name'])
 
     with mlflow.start_run():
