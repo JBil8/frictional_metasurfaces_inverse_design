@@ -19,7 +19,7 @@ def main():
     device = torch.device(cfg['training']['device'] if torch.cuda.is_available() else "cpu")
     n_asperities = cfg['physics']['n_asperities']
     
-    early_stopping = EarlyStopping(patience=60, verbose=True, delta=1e-5)
+    early_stopping = EarlyStopping(patience=50, verbose=True, delta=1e-5)
     mlflow.set_experiment(cfg['experiment_name'])
 
     with mlflow.start_run():
@@ -63,7 +63,7 @@ def main():
             dataset, [train_len, val_len, test_len], generator=generator
         )
 
-        train_loader = DataLoader(train_ds, batch_size=cfg['training']['batch_size'], shuffle=True, num_workers=8, pin_memory=True)
+        train_loader = DataLoader(train_ds, batch_size=cfg['training']['batch_size'], shuffle=True, num_workers=4, pin_memory=True)
         val_loader = DataLoader(val_ds, batch_size=2048, shuffle=False, num_workers=4, pin_memory=True)
         test_loader = DataLoader(test_ds, batch_size=2048, shuffle=False)
         val_plot_loader = DataLoader(val_ds, batch_size=1, shuffle=True)
@@ -79,17 +79,16 @@ def main():
         # The true unscaled grid we interpolate against
         p_star_grid = torch.linspace(0, global_P_max, steps).to(device)
 
-        optimizer = optim.Adam(model.parameters(), lr=cfg['training']['learning_rate'])
+        optimizer = optim.AdamW(model.parameters(), lr=cfg['training']['learning_rate'], weight_decay=1e-2)
         scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=cfg['training']['epochs'], eta_min=1e-6
-        )
+            optimizer, T_max=cfg['training']['epochs'], eta_min=cfg['training']['scheduler']['eta_min'])
 
         w_stiff = cfg['training']['loss_weights'].get('w_stiff', 1.0)
         w_alpha = cfg['training']['loss_weights'].get('w_pressure', 2.0)
         criterion = CurriculumIntensiveLoss(w_stiff=w_stiff, w_pressure=w_alpha, max_delta=max_d).to(device)
 
         epochs = cfg['training']['epochs']
-        k_start = 1e2
+        k_start = 1e3
         k_end = 1e5
 
         print("Starting training...")
@@ -99,11 +98,11 @@ def main():
             train_loss_accum = 0.0
             
             # --- DUAL SCHEDULE ---
-            scale_lambda = 0.01
+            scale_lambda = 0.1
             progress = 2 *epoch / epochs 
-            lambda_param = max(0.0, scale_lambda * (1.0 - progress))
+            # lambda_param = max(0.0, scale_lambda * (1.0 - progress))
             current_k =   min(k_start * (k_end / k_start) ** progress, k_end)
-
+            lambda_param = scale_lambda
             mlflow.log_metric("k_steepness", current_k, step=epoch)
             mlflow.log_metric("lambda_param", lambda_param, step=epoch)
 

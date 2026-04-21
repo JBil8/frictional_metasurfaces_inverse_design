@@ -6,53 +6,43 @@ class SurfaceInverseModel(nn.Module):
         super().__init__()
         self.n_asp = config['physics']['n_asperities']
         self.max_delta = config['physics']['max_delta_ratio'] * config['physics']['radius']
+        self.n_steps = config['data']['n_steps']
+        # The input is (Batch, 3 channels, n_steps spatial points)
+        # We flatten this immediately to lock in absolute positioning
+        self.input_dim = 3 * self.n_steps 
+        
+        # We need a wider initial capacity to handle the raw 1500-vector
+        hidden_dim = min(config['model']['hidden_dim'], 1024) 
 
-        # --- Efficient Encoder ---
-        self.conv_layers = nn.Sequential(
-            nn.Conv1d(3, 32, kernel_size=7, padding=3, stride=2), 
-            nn.BatchNorm1d(32),
+        # --- Pure Dense Encoder/Decoder ---
+        self.net = nn.Sequential(
+            nn.Linear(self.input_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
             nn.GELU(),
-
-            nn.Conv1d(32, 64, kernel_size=5, padding=2, stride=2),
-            nn.BatchNorm1d(64),
-            nn.GELU(),
-
-            nn.Conv1d(64, 128, kernel_size=3, padding=1, stride=2),
-            nn.BatchNorm1d(128),
-            nn.GELU(),
-
-            nn.Conv1d(128, 256, kernel_size=3, padding=1, stride=2),
-            nn.BatchNorm1d(256),
-            nn.GELU(),
-        )
-
-        # The Silver Bullet: Compress the remaining spatial dimension to 1
-        self.global_pool = nn.AdaptiveAvgPool1d(1)
-
-        hidden_dim = min(config['model']['hidden_dim'], 512) 
-
-        # --- Decoder ---
-        self.fc_layers = nn.Sequential(
-            # Input is now strictly 256, regardless of sequence length
-            nn.Linear(256, hidden_dim),
-            nn.ReLU(),
             nn.Dropout(0.1),
 
             nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dim // 2),
+            nn.GELU(),
+            nn.Dropout(0.1),
+
+            nn.Linear(hidden_dim // 2, hidden_dim // 4),
+            nn.BatchNorm1d(hidden_dim // 4),
+            nn.GELU(),
             
-            nn.Linear(hidden_dim // 2, self.n_asp * 2)
+            nn.Linear(hidden_dim // 4, self.n_asp * 2)
         )
 
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
-        features = self.conv_layers(x)
-        features = self.global_pool(features)     # Shape: (Batch, 256, 1)
-        features = features.view(features.size(0), -1) # Shape: (Batch, 256)
+        # Flatten the spatial and channel dimensions instantly: 
+        # Shape goes from (Batch, 3, n_steps) -> (Batch, 1500)
+        x_flat = x.view(x.size(0), -1) 
         
-        raw_out = self.sigmoid(self.fc_layers(features))
+        raw_out = self.sigmoid(self.net(x_flat))
 
+        # --- The Physics Scaling (Unchanged) ---
         raw_n = raw_out[:, :self.n_asp]
         raw_gaps = raw_out[:, self.n_asp:] 
 
