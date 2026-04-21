@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class CurriculumIntensiveLoss(nn.Module):
-    def __init__(self, w_shape=1.0, w_grad=1.0, w_mag=10, max_delta=1e-4):
+    def __init__(self, w_shape=1.0, w_grad=1.0, w_mag=20, max_delta=1e-4):
         super().__init__()
         self.w_shape = w_shape
         self.w_grad = w_grad

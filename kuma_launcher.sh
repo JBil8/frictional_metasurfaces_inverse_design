@@ -8,7 +8,7 @@
 #SBATCH --gpus=1         
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8   
+#SBATCH --cpus-per-task=4   
 #SBATCH --mem=16G               
 #SBATCH --time=01:00:00         
 # --- Environment Setup ---

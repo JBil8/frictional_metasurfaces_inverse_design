@@ -19,6 +19,7 @@ training:
   batch_size: 512 #1024
   epochs: 500
   learning_rate: 0.001
+  patience: 100
   device: "cuda"
   loss_weights:
     w_stiff: 2.0               # Weight for the dP/dAlpha topology & cliffs
