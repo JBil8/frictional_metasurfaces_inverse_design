@@ -2,7 +2,7 @@ import torch
 
 def batched_interp1d(x_target, x_pred, y_pred, pad_value=-1.0):
     """
-    Lightning-fast, differentiable batched 1D interpolation.
+    Fast, differentiable batched 1D interpolation.
     Args:
         x_target: (N_steps,) Fixed global grid (e.g., P* grid)
         x_pred: (Batch, N_steps) The x-values predicted by the physics engine
@@ -12,13 +12,16 @@ def batched_interp1d(x_target, x_pred, y_pred, pad_value=-1.0):
         y_interp: (Batch, N_steps) Interpolated y-values padded with pad_value
     """
     B, N_p = x_pred.shape
-    N_t = x_target.shape[0]
     
     # Expand target to match batch
     x_target_exp = x_target.unsqueeze(0).expand(B, -1)
     
     # Find insertion indices (Requires x_pred to be monotonically increasing)
-    idx = torch.searchsorted(x_pred, x_target_exp)
+    x_pred_contig = x_pred.contiguous()
+    x_target_exp_contig = x_target_exp.contiguous()
+    
+    # Find insertion indices 
+    idx = torch.searchsorted(x_pred_contig, x_target_exp_contig)
     
     # Clamp indices to avoid out-of-bounds errors during gather
     idx_lower = torch.clamp(idx - 1, min=0)

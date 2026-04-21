@@ -3,56 +3,58 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class CurriculumIntensiveLoss(nn.Module):
-    def __init__(self, w_stiff=1.0, w_pressure=2.0, w_bounds=0.1, max_delta=1e-4):
+    def __init__(self, w_shape=1.0, w_grad=1.0, w_mag=10, max_delta=1e-4):
         super().__init__()
-        self.w_stiff = w_stiff
-        self.w_alpha = w_pressure 
-        self.w_bounds = w_bounds 
+        self.w_shape = w_shape
+        self.w_grad = w_grad
+        self.w_mag = w_mag
         self.max_delta = max_delta
 
-    def forward(self, pred_stiff, target_stiff, pred_alpha, target_alpha, pred_params, target_params, lambda_param=0.0):
-        # ---------------------------------------------------------
-        # 1. SPLIT MASK WEIGHTING
-        # ---------------------------------------------------------
-        pred_mask = (pred_stiff != -1.0).float()
-        target_mask = (target_stiff != -1.0).float()
-
-        overlap_mask = target_mask * pred_mask
-        undershoot_mask = target_mask * (1.0 - pred_mask)
+    def forward(self, pred_alpha_hat, target_alpha_hat, 
+                pred_stiff_hat, target_stiff_hat, 
+                pred_scalars, target_scalars, 
+                pred_params, target_params, lambda_param=0.0):
         
-        # Unpenalized overshoot acts as an exile zone
-        mask_weights = overlap_mask + (undershoot_mask * self.w_bounds)
-        valid_elements = torch.sum(mask_weights) + 1e-8 
+        # ---------------------------------------------------------
+        # SHAPE LOSS (Topology & Fingerprint)
+        # ---------------------------------------------------------
+        # L1 for horizontal shifts in stiffness cliffs, 
+        loss_alpha = F.l1_loss(pred_alpha_hat, target_alpha_hat)
+        loss_stiff = F.l1_loss(pred_stiff_hat, target_stiff_hat)
+        
+        # Stabilized Gradient Loss: Ensures the curve 'bends' correctly.
+        diff_pred = torch.diff(pred_stiff_hat, dim=1)
+        diff_target = torch.diff(target_stiff_hat, dim=1)
+        loss_grad = F.l1_loss(diff_pred, diff_target)
+
+        loss_shape_total = (loss_alpha + loss_stiff) * self.w_shape + (loss_grad * self.w_grad)
 
         # ---------------------------------------------------------
-        # 2. HUBER MASKED CURVE LOSS (Balances topographies)
+        # MAGNITUDE LOSS (Absolute Physical Scale)
         # ---------------------------------------------------------
-        # Smooth L1 prevents massive stiffness jumps (Walls) from dominating low-load regions (Sparse)
-        err_stiff = F.smooth_l1_loss(pred_stiff, target_stiff, reduction='none', beta=0.05)
-        loss_shape = torch.sum(err_stiff * mask_weights) / valid_elements
+        # Extract the absolute maximums [Batch, 2]
+        pred_p_max, pred_a_max = pred_scalars[:, 0], pred_scalars[:, 1]
+        targ_p_max, targ_a_max = target_scalars[:, 0], target_scalars[:, 1]
 
-        err_alpha = F.smooth_l1_loss(pred_alpha, target_alpha, reduction='none', beta=0.05)
-        loss_alpha = torch.sum(err_alpha * mask_weights) / valid_elements
+        # MSLE: Mean Squared Logarithmic Error
+        # Equalizes penalty across orders of magnitude
+        log_pred_p = torch.log10(pred_p_max + 1e-12)
+        log_targ_p = torch.log10(targ_p_max + 1e-12)
+        
+        log_pred_a = torch.log10(pred_a_max + 1e-12)
+        log_targ_a = torch.log10(targ_a_max + 1e-12)
 
-        # ---------------------------------------------------------
-        # 3. STABILIZED GRADIENT LOSS
-        # ---------------------------------------------------------
-        # Calculate slopes only where BOTH curves exist physically
-        diff_pred = torch.diff(pred_stiff, dim=2)
-        diff_target = torch.diff(target_stiff, dim=2)
+        loss_mag_p = F.mse_loss(log_pred_p, log_targ_p)
+        loss_mag_a = F.mse_loss(log_pred_a, log_targ_a)
+        
+        loss_mag_total = (loss_mag_p + loss_mag_a) * self.w_mag
 
-        diff_mask = overlap_mask[:, :, :-1] * overlap_mask[:, :, 1:]
-        diff_elements = torch.sum(diff_mask) + 1e-8
+        # Total Physics Loss 
 
-        # We must use Smooth L1 here as well because this is a second derivative!
-        err_grad = F.smooth_l1_loss(diff_pred, diff_target, reduction='none', beta=0.01)
-        loss_grad = torch.sum(err_grad * diff_mask) / diff_elements
-
-        # Total Physics Loss
-        physics_loss = ((loss_shape + loss_grad) * self.w_stiff) + (loss_alpha * self.w_alpha)
+        physics_loss = loss_shape_total + loss_mag_total
 
         # ---------------------------------------------------------
-        # 4. PARAMETER LOSS 
+        # PARAMETER LOSS (Curriculum Anchor)
         # ---------------------------------------------------------
         n_asp = pred_params.shape[1] // 2
         pred_n, pred_h = pred_params[:, :n_asp], pred_params[:, n_asp:]
@@ -62,6 +64,6 @@ class CurriculumIntensiveLoss(nn.Module):
         loss_h = F.mse_loss(pred_h / self.max_delta, targ_h / self.max_delta)
         param_loss = loss_n + loss_h
 
-        print(f"Physics Loss: {physics_loss.item():.4f}, Param Loss: {param_loss.item():.4f}, Lambda: {lambda_param:.4f}")
+        # print(f"Shape: {loss_shape_total.item():.4f} | Mag: {loss_mag_total.item():.4f} | Param: {param_loss.item():.4f} | Lmbda: {lambda_param:.4f}")
 
         return physics_loss + (lambda_param * param_loss)

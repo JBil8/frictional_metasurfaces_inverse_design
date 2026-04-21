@@ -9,6 +9,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from utils.config import load_config
 from utils.seeding import set_seed
+from utils.interpolation import batched_interp1d
 from physics.differentiable import AxisymmetricContactLayer
 
 class SurfaceGenerator:
@@ -199,10 +200,9 @@ if __name__ == "__main__":
     t_w = torch.ones(1, n_asp).to(device) * 2.0 * R
 
     # ---------------------------------------------------------
-    # 1. ESTABLISH THE GLOBAL PHYSICAL BOUNDING BOX (P*_max)
+    # 1. ESTABLISH THE GLOBAL PHYSICAL BOUNDING BOX (Optional but good for reference)
     # ---------------------------------------------------------
-    print("Calculating Global Maximum Nominal Capacity (P*_max)...")
-    # The absolute ceiling: All asperities are n=3 (bluntest), all at h=0 (engaging instantly)
+    print("Calculating Global Maximums for reference...")
     n_ceiling = torch.ones(1, n_asp).to(device) * 3.0
     h_ceiling = torch.zeros(1, n_asp).to(device)
     
@@ -212,21 +212,20 @@ if __name__ == "__main__":
     
     print(f"Global P*_max established at: {global_P_max:.6f}")
     
-    # Define the standardized fixed grid
-    p_star_grid = torch.linspace(0, global_P_max, n_steps)
-    p_star_grid_np = p_star_grid.numpy()
-
     # ---------------------------------------------------------
-    # 2. RUN PHYSICS AND INTERPOLATE ONTO FIXED GRID
+    # 2. RUN PHYSICS AND INTERPOLATE ONTO NORMALIZED [0, 1] GRID
     # ---------------------------------------------------------
-    print("Solving physics and interpolating to P* grid...")
-    batch_size = 2000
+    print("Solving physics and interpolating to Normalized P-hat grid...")
+    batch_size = cfg['training']['batch_size']
     dataset = TensorDataset(all_n, all_h)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
 
-    all_P_grid = []
-    all_alpha_padded = []
-    all_stiff_padded = []
+    all_alpha_hat = []
+    all_stiff_hat = []
+    all_scalars = []
+
+    # The universal x-axis for the network (0.0 to 1.0)
+    p_hat_grid = torch.linspace(0, 1.0, n_steps, device=device)
 
     with torch.no_grad():
         for batch_n, batch_h in loader:
@@ -239,45 +238,58 @@ if __name__ == "__main__":
             # Generate native curves in displacement space
             P_native, alpha_native, stiff_native = phys(batch_h, batch_n, batch_tw, batch_ind, k_steepness=1e5)
             
-            P_np = P_native.cpu().numpy()
-            alpha_np = alpha_native.cpu().numpy()
-            stiff_np = stiff_native.cpu().numpy()
-
-            # Interpolate each sample onto the fixed P* grid
-            batch_alpha_interp = np.zeros((current_batch, n_steps))
-            batch_stiff_interp = np.zeros((current_batch, n_steps))
+            # 1. Extract absolute maximums at maximum indentation
+            # Slice with [-1:] to keep the dimension (Batch, 1) for easy broadcasting
+            p_max = P_native[:, -1:]
+            a_max = alpha_native[:, -1:]
             
-            for i in range(current_batch):
-                # numpy.interp with right=-1.0 perfectly creates our padded mask out-of-bounds
-                batch_alpha_interp[i] = np.interp(p_star_grid_np, P_np[i], alpha_np[i], right=-1.0)
-                batch_stiff_interp[i] = np.interp(p_star_grid_np, P_np[i], stiff_np[i], right=-1.0)
+            # Prevent division by zero mathematically using clamp
+            p_max_safe = torch.clamp(p_max, min=1e-12)
+            a_max_safe = torch.clamp(a_max, min=1e-12)
 
-            # Since the P grid is fixed, we just repeat the standard grid for all samples
-            batch_P_grid = p_star_grid.unsqueeze(0).repeat(current_batch, 1)
+            # 2. Normalize arrays purely in PyTorch (Broadcasting handles the Batch dimension)
+            P_hat = P_native / p_max_safe
+            alpha_hat = alpha_native / a_max_safe
+            
+            # Normalized Stiffness: d(P_hat)/d(alpha_hat) = S * (a_max / p_max)
+            stiff_hat = stiff_native * (a_max_safe / p_max_safe)
 
-            all_P_grid.append(batch_P_grid)
-            all_alpha_padded.append(torch.tensor(batch_alpha_interp, dtype=torch.float32))
-            all_stiff_padded.append(torch.tensor(batch_stiff_interp, dtype=torch.float32))
+            # 3. Interpolate onto the universal 0-to-1 grid using your custom function
+            # Since P_hat and p_hat_grid both max out at 1.0, pad_value won't trigger, but 0.0 or 1.0 is safe.
+            batch_alpha_interp = batched_interp1d(p_hat_grid, P_hat, alpha_hat, pad_value=1.0)
+            batch_stiff_interp = batched_interp1d(p_hat_grid, P_hat, stiff_hat, pad_value=0.0)
+            
+            # Store scalars (Concatenate along dim 1 to make shape: [Batch, 2])
+            batch_scalars = torch.cat([p_max, a_max], dim=1)
 
-    # Assemble Final Tensor
-    # Channel 0: P* (Fixed Grid)
-    # Channel 1: Alpha (Padded with -1.0)
-    # Channel 2: Stiffness (Padded with -1.0)
-    X_final = torch.stack([
-        torch.cat(all_P_grid, dim=0),
-        torch.cat(all_alpha_padded, dim=0),
-        torch.cat(all_stiff_padded, dim=0) 
+            # Move to CPU only at the very end to free up GPU VRAM for the next batch
+            all_alpha_hat.append(batch_alpha_interp.cpu())
+            all_stiff_hat.append(batch_stiff_interp.cpu())
+            all_scalars.append(batch_scalars.cpu())
+
+    # ---------------------------------------------------------
+    # 3. ASSEMBLE AND SAVE
+    # ---------------------------------------------------------
+    # X_arrays Shape: (Total_Samples, 2 channels, 512 steps)
+    X_arrays = torch.stack([
+        torch.cat(all_alpha_hat, dim=0),
+        torch.cat(all_stiff_hat, dim=0)
     ], dim=1)
 
+    # X_scalars Shape: (Total_Samples, 2)
+    X_scalars = torch.cat(all_scalars, dim=0)
+
+    # Y_final Shape: (Total_Samples, 18)
     Y_final = torch.cat([all_n.cpu(), all_h.cpu()], dim=1)
 
     save_path = cfg['data']['path']
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
     torch.save({
-        "x": X_final,
+        "x_arrays": X_arrays,
+        "x_scalars": X_scalars,
         "y": Y_final,
-        "p_star_max": global_P_max  # Save this so the training script knows the normalization bound
+        "p_star_max_global": global_P_max 
     }, save_path)
 
     print("--- Dataset Generation Complete ---")

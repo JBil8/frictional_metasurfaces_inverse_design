@@ -7,12 +7,17 @@ class SurfaceInverseModel(nn.Module):
         self.n_asp = config['physics']['n_asperities']
         self.max_delta = config['physics']['max_delta_ratio'] * config['physics']['radius']
         self.n_steps = config['data']['n_steps']
-
-        # The input is (Batch, 3 channels, n_steps spatial points)
-        # We flatten this immediately to lock in absolute positioning
-        self.input_dim = 3 * self.n_steps 
         
-        # We need a wider initial capacity to handle the raw 3*n_steps-vector
+        # --- INPUT DIMENSION CALCULATION ---
+        # array input (Batch, 2 channels, n_steps) -> alpha_hat, stiff_hat
+        # scalar input (Batch, 2) -> log10(P_max), log10(Alpha_max)
+        self.array_dim = 2 * self.n_steps
+        self.scalar_dim = 2
+        
+        # Total dimension entering the first Linear layer
+        self.input_dim = self.array_dim + self.scalar_dim 
+        
+        # We need a wider initial capacity to handle the raw vector
         hidden_dim = min(config['model']['hidden_dim'], 1024) 
 
         # --- Pure Dense Encoder/Decoder ---
@@ -36,14 +41,19 @@ class SurfaceInverseModel(nn.Module):
 
         self.sigmoid = nn.Sigmoid()
 
-    def forward(self, x):
+    def forward(self, x_arrays, x_scalars):
         # Flatten the spatial and channel dimensions instantly: 
-        # Shape goes from (Batch, 3, 500) -> (Batch, 1500)
-        x_flat = x.view(x.size(0), -1) 
+        # Shape goes from (Batch, 2, n_steps) -> (Batch, 1024)
+        x_flat = x_arrays.view(x_arrays.size(0), -1) 
         
-        raw_out = self.sigmoid(self.net(x_flat))
+        # Concatenate the normalized arrays with the physical magnitude scalars
+        # Shape goes to (Batch, 1026)
+        x_combined = torch.cat([x_flat, x_scalars], dim=1)
+        
+        # 3. Pass through the rigid dense network
+        raw_out = self.sigmoid(self.net(x_combined))
 
-        # --- The Physics Scaling (Unchanged) ---
+        # --- The Physics Scaling ---
         raw_n = raw_out[:, :self.n_asp]
         raw_gaps = raw_out[:, self.n_asp:] 
 

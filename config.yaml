@@ -8,8 +8,8 @@ physics:
 
 data:
   path: "data/dataset_asp_unitcell.pt"
-  n_steps: 512
-  n_samples: 250000
+  n_steps: 128
+  n_samples: 200000
 
 model:
   hidden_dim: 512 #256
@@ -18,7 +18,7 @@ model:
 training:
   batch_size: 512 #1024
   epochs: 500
-  learning_rate: 0.00005
+  learning_rate: 0.001
   device: "cuda"
   loss_weights:
     w_stiff: 2.0               # Weight for the dP/dAlpha topology & cliffs
