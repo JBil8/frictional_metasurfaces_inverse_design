@@ -19,7 +19,7 @@ def plot_asperity_profiles():
     }
     
     # 2. Setup Plot
-    fig, ax = plt.subplots(figsize=(6, 4))
+    fig, ax = plt.subplots(figsize=(4, 4))
     
     plt.rcParams.update({
         'font.size': 11,
@@ -106,7 +106,7 @@ def plot_asperity_profiles():
     ax.set_yticks([]) # Hide Y ticks
 
     plt.tight_layout()
-    plt.savefig('asperity_shapes_final.png', dpi=300, bbox_inches='tight')
+    plt.savefig('asperity_shapes_final.pdf', dpi=300, bbox_inches='tight')
     plt.show()
 
 if __name__ == "__main__":

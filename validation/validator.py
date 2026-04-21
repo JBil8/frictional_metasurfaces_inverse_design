@@ -5,6 +5,17 @@ import numpy as np
 import matplotlib.pyplot as plt
 from torch.utils.data import random_split
 
+import matplotlib.pyplot as plt
+plt.rcParams.update({
+    'font.size': 12,
+    'font.family': 'sans-serif',
+    'axes.linewidth': 1.2,
+    'xtick.direction': 'in',
+    'ytick.direction': 'in',
+    'xtick.major.width': 1.2,
+    'ytick.major.width': 1.2,
+})
+
 # Ensure pathing works when executed from inside the validation folder
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(current_dir, '..'))
@@ -76,16 +87,16 @@ class UnifiedValidator:
         if target_type == "linear": return self.gen.get_consistent_linear_coulomb()
         if target_type == "saturate": return self.gen.get_consistent_saturating()
         if target_type == "bilinear": return self.gen.get_consistent_bilinear()
+        if target_type == "quadratic": return self.gen.get_consistent_quadratic()
         raise ValueError(f"Unknown target type: {target_type}")
 
-    def _run_refinement(self, t_p, t_alpha, n_init, h_init, **kwargs):
-        """Wraps the external optimizer utility to automatically pass class context."""
+    def _run_refinement(self, t_p, t_alpha, n_init, h_init, lock_n=False, **kwargs):
         return refine_topology(
             target_alpha=t_alpha, target_p=t_p,
             n_init=n_init, h_init=h_init,
             phys_engine=self.phys, p_star_grid=self.p_star_grid,
             t_w=self.gen.t_w, indentations=self.gen.indentations,
-            **kwargs
+            lock_n=lock_n, **kwargs
         )
 
     def _align_to_grid(self, p, val):
@@ -194,10 +205,9 @@ class UnifiedValidator:
                 title=f"Unseen: {title}"
             )
 
-    def validate_optimization_baseline(self, target_type="bilinear", n_starts=50):
-        print(f"\n[Baseline] Comparing CNN vs Multi-Start ({n_starts} guesses) for {target_type}...")
+    def validate_optimization_baseline(self, target_type="quadratic", n_starts=50):
+        print(f"\n[Baseline] Tri-Comparison for {target_type} (CNN vs General Multi vs Hertz Multi)...")
         
-        # 1. Fetch Target
         t_p, t_a, t_s, title = self._get_target(target_type)
         nn_input = self.prepare_nn_input(t_p, t_a, t_s)
 
@@ -207,43 +217,44 @@ class UnifiedValidator:
             mask = (t_al != -1.0).float()
             return torch.sum(torch.pow(p_al - t_al, 2) * mask) / (torch.sum(mask) + 1e-8)
 
-        # 2. Strategy A: CNN Initialization (Teal)
+        # --- Strategy A: CNN Initialization + General L-BFGS ---
         with torch.no_grad():
             n_cnn, h_cnn = self.model(nn_input)
-            
         n_A, h_A, p_A, a_A, s_A = self._run_refinement(t_p, t_a, n_cnn, h_cnn)
         loss_A = compute_loss(p_A, a_A).item()
-        print(f"  > [CNN] Alpha Error: {loss_A:.6f}")
+        print(f"  > [A] CNN Surrogate (n=var): {loss_A:.6f}")
 
-        # 3. Strategy B: Multi-Start (Green)
-        print(f"  > Strategy B: Multi-Start ({n_starts} random guesses)...")
-        best_loss_B, best_n, best_h = float('inf'), None, None
-        
+        # --- Strategy B: Multi-Start General (n in [1,3]) ---
+        best_loss_B, best_n_B, best_h_B = float('inf'), None, None
         for _ in range(n_starts):
             n_rand = torch.rand(1, self.n_asp).to(self.device) * 2.0 + 1.0
-            h_rand = torch.rand(1, self.n_asp).to(self.device) * self.gen.max_d
-            h_rand = torch.sort(h_rand, dim=1)[0]
-            h_rand = h_rand - h_rand[:, 0:1]
-
-            # Short probe
+            h_rand = torch.sort(torch.rand(1, self.n_asp).to(self.device) * self.gen.max_d, dim=1)[0]
             n_prb, h_prb, p_prb, a_prb, _ = self._run_refinement(t_p, t_a, n_rand, h_rand)
-            
             if (l := compute_loss(p_prb, a_prb).item()) < best_loss_B:
-                best_loss_B, best_n, best_h = l, n_prb, h_prb
-
-        # Final refinement for best random guess
-        n_B, h_B, p_B, a_B, s_B = self._run_refinement(t_p, t_a, best_n, best_h)
+                best_loss_B, best_n_B, best_h_B = l, n_prb, h_prb
+        n_B, h_B, p_B, a_B, s_B = self._run_refinement(t_p, t_a, best_n_B, best_h_B)
         loss_B = compute_loss(p_B, a_B).item()
-        
-        print(f"  > [Multi-Start] Alpha Error: {loss_B:.6f}")
-        print(f"  > CNN is {loss_B / (loss_A + 1e-12):.1f}x more accurate.")
+        print(f"  > [B] Multi-Start General (n=var): {loss_B:.6f}")
 
-        # --- 2x2 PLOTTING BLOCK ---
+        # --- Strategy C: Multi-Start Hertzian (n=2) ---
+        best_loss_C, best_h_C = float('inf'), None
+        for _ in range(n_starts):
+            n_hertz = torch.ones(1, self.n_asp).to(self.device) * 2.0
+            h_rand = torch.sort(torch.rand(1, self.n_asp).to(self.device) * self.gen.max_d, dim=1)[0]
+            _, h_prb, p_prb, a_prb, _ = self._run_refinement(t_p, t_a, n_hertz, h_rand, lock_n=True)
+            if (l := compute_loss(p_prb, a_prb).item()) < best_loss_C:
+                best_loss_C, best_h_C = l, h_prb
+        n_C, h_C, p_C, a_C, s_C = self._run_refinement(t_p, t_a, torch.ones_like(n_hertz)*2.0, best_h_C, lock_n=True)
+        loss_C = compute_loss(p_C, a_C).item()
+        print(f"  > [C] Multi-Start Hertz (n=2):   {loss_C:.6f}")
+
+        # --- PLOTTING ---
+        import matplotlib.pyplot as plt
         fig, axs = plt.subplots(2, 2, figsize=(16, 12))
         p_axis = self.p_star_grid.cpu().numpy()
         max_p_val = t_p.max().item()
         
-        C_GT, C_CNN, C_MS = '#333333', '#0072B2', '#009E73' # Black, Teal, Green
+        C_GT, C_CNN, C_GEN, C_HERTZ = '#333333', '#0072B2', '#009E73', '#D55E00' # Black, Teal, Green, Red
 
         def style_ax(ax):
             ax.grid(True, alpha=0.15); ax.tick_params(direction='in', top=True, right=True)
@@ -251,47 +262,118 @@ class UnifiedValidator:
 
         def plot_stem(ax, x, y, color, marker, label):
             markerline, stemlines, _ = ax.stem(x, y, basefmt=" ")
-            plt.setp(markerline, color=color, marker=marker, markersize=7, label=label)
-            plt.setp(stemlines, color=color, lw=2, alpha=0.6)
+            plt.setp(markerline, color=color, marker=marker, markersize=6, label=label)
+            plt.setp(stemlines, color=color, lw=1.5, alpha=0.5)
 
         # [0,0] Area
         axs[0,0].plot(p_axis, self._align_to_grid(t_p, t_a), color=C_GT, lw=3, label="Target")
-        axs[0,0].plot(p_axis, self._align_to_grid(p_B, a_B), color=C_MS, ls='--', lw=2, label=f"Multi-Start ({n_starts}x)")
-        axs[0,0].plot(p_axis, self._align_to_grid(p_A, a_A), color=C_CNN, ls=':', lw=4, label="CNN Init (1x)")
+        axs[0,0].plot(p_axis, self._align_to_grid(p_C, a_C), color=C_HERTZ, ls='-.', lw=2, label=f"Hertz (n=2)")
+        axs[0,0].plot(p_axis, self._align_to_grid(p_B, a_B), color=C_GEN, ls='--', lw=2, label=f"MS General (n=var)")
+        axs[0,0].plot(p_axis, self._align_to_grid(p_A, a_A), color=C_CNN, ls=':', lw=4, label="CNN Surrogate")
         axs[0,0].set(title="Baseline: Area vs Load", ylabel="Contact Fraction α")
         style_ax(axs[0,0]); axs[0,0].legend()
 
         # [1,0] Stiffness
         axs[1,0].plot(p_axis, self._align_to_grid(t_p, t_s), color=C_GT, lw=3)
-        axs[1,0].plot(p_axis, self._align_to_grid(p_B, s_B), color=C_MS, ls='--', lw=2)
+        axs[1,0].plot(p_axis, self._align_to_grid(p_C, s_C), color=C_HERTZ, ls='-.', lw=2)
+        axs[1,0].plot(p_axis, self._align_to_grid(p_B, s_B), color=C_GEN, ls='--', lw=2)
         axs[1,0].plot(p_axis, self._align_to_grid(p_A, s_A), color=C_CNN, ls=':', lw=4)
         axs[1,0].set(title="Baseline: Stiffness vs Load", xlabel="Nominal Pressure P*", ylabel="Stiffness S*")
         style_ax(axs[1,0])
 
-        # Data Prep
         idx = np.arange(self.n_asp)
-        s_idx_A = torch.argsort(h_A[0]).cpu().numpy()
-        s_idx_B = torch.argsort(h_B[0]).cpu().numpy()
+        s_A, s_B, s_C = [torch.argsort(h[0]).cpu().numpy() for h in [h_A, h_B, h_C]]
 
         # [0,1] Heights
-        plot_stem(axs[0,1], idx - 0.1, h_B[0][s_idx_B].cpu().numpy(), C_MS, '^', 'Multi-Start')
-        plot_stem(axs[0,1], idx + 0.1, h_A[0][s_idx_A].cpu().numpy(), C_CNN, 's', 'CNN Init')
+        plot_stem(axs[0,1], idx - 0.2, h_C[0][s_C].cpu().numpy(), C_HERTZ, 'D', 'Hertz')
+        plot_stem(axs[0,1], idx, h_B[0][s_B].cpu().numpy(), C_GEN, '^', 'MS General')
+        plot_stem(axs[0,1], idx + 0.2, h_A[0][s_A].cpu().numpy(), C_CNN, 's', 'CNN Surrogate')
         axs[0,1].set(title="Optimized Heights", ylabel="h [m]"); axs[0,1].legend()
 
         # [1,1] Exponents
-        axs[1,1].axhline(1.0, color='gray', ls=':', alpha=0.5); axs[1,1].axhline(2.0, color='gray', ls='--', alpha=0.5)
-        plot_stem(axs[1,1], idx - 0.1, n_B[0][s_idx_B].detach().numpy(), C_MS, '^', 'Multi-Start')
-        plot_stem(axs[1,1], idx + 0.1, n_A[0][s_idx_A].detach().numpy(), C_CNN, 's', 'CNN Init')
+        axs[1,1].axhline(2.0, color=C_HERTZ, ls='-', alpha=0.3)
+        plot_stem(axs[1,1], idx - 0.2, n_C[0][s_C].detach().numpy(), C_HERTZ, 'D', 'Hertz')
+        plot_stem(axs[1,1], idx, n_B[0][s_B].detach().numpy(), C_GEN, '^', 'MS General')
+        plot_stem(axs[1,1], idx + 0.2, n_A[0][s_A].detach().numpy(), C_CNN, 's', 'CNN Surrogate')
         axs[1,1].set(title="Optimized Exponents", xlabel="Asperity Index", ylabel="n [-]", ylim=(0.8, 3.2))
         axs[1,1].legend(loc='lower right', fontsize='small')
 
         plt.tight_layout()
-        os.makedirs("plots", exist_ok=True)
-        plt.savefig(f"plots/baseline_2x2_{target_type}.png", dpi=150); plt.close()
+        import os; os.makedirs("plots", exist_ok=True)
+        plt.savefig(f"plots/baseline_3way_{target_type}.png", dpi=150); plt.close()
 
     # -------------------------------------------------------------------------
     # PLOTTING LOGIC
     # -------------------------------------------------------------------------
+    def plot_test_set_overview(self, save_path="plots/fig2_test_set_overview.png"):
+        """
+        Generates a publication-ready 2x3 grid showing one random unseen 
+        test sample from each of the 6 topological categories.
+        """
+        print("\n[Validator] Generating Dataset Overview Figure from Test Set...")
+        categorized_indices = self.get_test_set_indices_by_category()
+
+        # -------------------------------------------------------------------
+        # 1. PUBLICATION-GRADE PLOTTING SETUP
+        # -------------------------------------------------------------------
+
+        fig, axs = plt.subplots(2, 3, figsize=(7, 4), sharex=True, sharey=True)
+        axs = axs.flatten()
+        
+        C_DATA = '#2F4F4F' # Dark Slate Gray
+        panel_labels = ['(a)', '(b)', '(c)', '(d)', '(e)', '(f)']
+        p_axis = self.p_star_grid.cpu().numpy()
+
+        # -------------------------------------------------------------------
+        # 2. FETCH AND PLOT DATA
+        # -------------------------------------------------------------------
+        for i, (category, indices) in enumerate(categorized_indices.items()):
+            if i >= 6: break # Safety limit for 2x3 grid
+            
+            ax = axs[i]
+            
+            if not indices:
+                ax.text(0.5, 0.5, f"No Test Data:\n{category}", ha='center', va='center')
+                continue
+
+            # Pick a random unseen sample (+1 if your generator expects 1-based indexing)
+            idx = np.random.choice(indices) + 1 
+            
+            # Fetch Ground Truth Data
+            t_p, t_a, t_s, _, _, _ = self.gen.get_custom_sample(idx, category)
+            
+            # Align to global grid for clean, consistent plotting
+            a_aligned = self._align_to_grid(t_p, t_a)
+
+            # Plot the curve
+            ax.plot(p_axis, a_aligned, color=C_DATA, linewidth=3, solid_capstyle='round')
+            
+            # Grid and spines
+            ax.grid(True, linestyle='--', alpha=0.4, color='gray')
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            
+            # Title and Panel Label
+            ax.set_title(category.replace("_", " ").title(), fontsize=14, pad=12, fontweight='bold')
+            ax.text(0.05, 0.90, panel_labels[i], transform=ax.transAxes, 
+                    fontsize=14, fontweight='bold', va='top')
+            
+            # Formatting
+            ax.ticklabel_format(axis='x', style='sci', scilimits=(0,0))
+            ax.set_xlim(0, 0.0075)
+            
+            if i >= 3:
+                ax.set_xlabel('$P^*$', fontsize=13)
+            if i % 3 == 0:
+                ax.set_ylabel(r'$\alpha$', fontsize=13)
+
+        # -------------------------------------------------------------------
+        # 3. SAVE AND EXPORT
+        # -------------------------------------------------------------------
+        plt.tight_layout()
+        plt.subplots_adjust(hspace=0.25, wspace=0.1) 
+        plt.savefig(save_path, dpi=300, bbox_inches='tight', transparent=False)
+
 
     def plot_comparison(self, t_p, t_a, t_s, gt_n, gt_h, p_nn, a_nn, s_nn, n_nn, h_nn, title):
         fig, axs = plt.subplots(2, 2, figsize=(16, 12))
@@ -473,6 +555,7 @@ if __name__ == "__main__":
     val = UnifiedValidator("config.yaml")
     set_seed(17)
     
+    val.plot_test_set_overview()
     # val.validate_on_test_set()
     # val.validate_designed(target_type="linear", refine=True)
     # val.validate_designed(target_type="saturate", refine=True)
@@ -480,4 +563,5 @@ if __name__ == "__main__":
     
     # val.validate_optimization_baseline(target_type="saturate")
     # val.validate_optimization_baseline(target_type="bilinear")
-    val.validate_optimization_baseline(target_type="linear")
+    # val.validate_optimization_baseline(target_type="linear")
+    # val.validate_optimization_baseline(target_type="quadratic")

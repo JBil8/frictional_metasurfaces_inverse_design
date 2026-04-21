@@ -113,8 +113,8 @@ class TargetGenerator:
         """
         # Choose bounds that fit nicely within your model's normalization limits
         # Based on your previous plots, P* up to ~0.008 and alpha up to ~0.08 is reasonable.
-        max_p = 0.0005
-        max_alpha = 0.01
+        max_p = 0.00041
+        max_alpha = 0.004
         
         # 1. Define perfect linear arrays
         target_pressure = torch.linspace(0, max_p, self.n_steps).unsqueeze(0).to(self.device)
@@ -129,6 +129,28 @@ class TargetGenerator:
         
         return target_pressure, target_alpha, target_stiff, "Strictly Linear (Archard Target)"
     
+    def get_consistent_quadratic(self):
+        """
+        Generates a mathematically perfect quadratic target (P* proportional to alpha^2).
+        This provides a mathematically exact analytical baseline with a linearly increasing stiffness.
+        """
+        max_p = 0.00041*10
+        max_alpha = 0.0012*10
+        
+        # 1. Define the independent variable (alpha) linearly
+        target_alpha = torch.linspace(0, max_alpha, self.n_steps).unsqueeze(0).to(self.device)
+        
+        # 2. Calculate the parabolic constant 'c'
+        c = max_p / (max_alpha ** 0.5)
+        
+        # 3. Pressure is purely quadratic
+        target_pressure = c * (target_alpha ** 0.5)
+        
+        # 4. Stiffness is the exact analytical derivative of the pressure curve
+        target_stiff = 2 * c * target_alpha
+        
+        return target_pressure, target_alpha, target_stiff, "Strictly Quadratic Target"
+
     def get_synthetic_sigmoid(self):
         steps = torch.linspace(0, 1, self.n_steps).to(self.device)
         t_alpha = 0.4 * (steps ** 1.5) 

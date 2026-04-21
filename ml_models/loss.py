@@ -62,4 +62,6 @@ class CurriculumIntensiveLoss(nn.Module):
         loss_h = F.mse_loss(pred_h / self.max_delta, targ_h / self.max_delta)
         param_loss = loss_n + loss_h
 
+        print(f"Physics Loss: {physics_loss.item():.4f}, Param Loss: {param_loss.item():.4f}, Lambda: {lambda_param:.4f}")
+
         return physics_loss + (lambda_param * param_loss)

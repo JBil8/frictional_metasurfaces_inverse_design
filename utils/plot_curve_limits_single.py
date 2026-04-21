@@ -18,13 +18,16 @@ def plot_design_space_loglog_shaded():
     # Slope = 0.66...
     A_hertz = P ** (2/3)
     
+    # Cubic
+    A_cubic = P ** 0.5
+
     # --- Top Limit: Flat Punch (Gamma -> infinity) ---
     # The limit of "constant area"
     # Slope = 0
     A_flat = np.ones_like(P)
     
     # 3. Setup Plot
-    fig, ax = plt.subplots(figsize=(6, 4))
+    fig, ax = plt.subplots(figsize=(4.5, 4.5))
     
     # Publication styling
     plt.rcParams.update({
@@ -42,7 +45,7 @@ def plot_design_space_loglog_shaded():
     ax.loglog(P, A_hertz, 'k--', linewidth=2.0, label=r'$\gamma=2$ (Hertz)')
     
     # Flat (Top)
-    # ax.loglog(P, A_flat, 'k-.', linewidth=1.5, label=r'$\gamma \to \infty$ (Flat Punch)')
+    ax.loglog(P, A_cubic, 'k-.', linewidth=1.5, label=r'$\gamma=3$ (Cubic)')
 
     # 5. Shading (The Story)
     
@@ -78,7 +81,7 @@ def plot_design_space_loglog_shaded():
     ax.grid(True, which='major', linestyle='-', linewidth=0.5, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig('design_space_loglog_final.png', dpi=300)
+    plt.savefig('design_space_loglog_final.pdf', dpi=300)
     plt.show()
 
 if __name__ == "__main__":
