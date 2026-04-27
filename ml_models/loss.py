@@ -2,13 +2,19 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
+from utils.config import load_config
+
 class CurriculumIntensiveLoss(nn.Module):
-    def __init__(self, w_shape=1.0, w_grad=1.0, w_mag=20, max_delta=1e-4):
+    def __init__(self, w_shape=1.0, w_grad=1.0, w_mag=20,
+                max_delta=1e-4, gamma_max=4.0, gamma_min=1.8):  
         super().__init__()
         self.w_shape = w_shape
         self.w_grad = w_grad
         self.w_mag = w_mag
         self.max_delta = max_delta
+        self.gamma_max = gamma_max
+        self.gamma_min = gamma_min
 
     def forward(self, pred_alpha_hat, target_alpha_hat, 
                 pred_stiff_hat, target_stiff_hat, 
@@ -57,12 +63,16 @@ class CurriculumIntensiveLoss(nn.Module):
         # PARAMETER LOSS (Curriculum Anchor)
         # ---------------------------------------------------------
         n_asp = pred_params.shape[1] // 2
-        pred_n, pred_h = pred_params[:, :n_asp], pred_params[:, n_asp:]
-        targ_n, targ_h = target_params[:, :n_asp], target_params[:, n_asp:]
+        pred_gamma, pred_h = pred_params[:, :n_asp], pred_params[:, n_asp:]
+        targ_gamma, targ_h = target_params[:, :n_asp], target_params[:, n_asp:]
         
-        loss_n = F.mse_loss(pred_n / 3.0, targ_n / 3.0)
+        # Min-Max normalize the exponents to [0, 1] for balanced gradients
+        norm_pred_g = (pred_gamma - self.gamma_min) / (self.gamma_max - self.gamma_min)
+        norm_targ_g = (targ_gamma - self.gamma_min) / (self.gamma_max - self.gamma_min)
+        
+        loss_gamma = F.mse_loss(norm_pred_g, norm_targ_g)
         loss_h = F.mse_loss(pred_h / self.max_delta, targ_h / self.max_delta)
-        param_loss = loss_n + loss_h
+        param_loss = loss_gamma + loss_h
 
         # print(f"Shape: {loss_shape_total.item():.4f} | Mag: {loss_mag_total.item():.4f} | Param: {param_loss.item():.4f} | Lmbda: {lambda_param:.4f}")
 

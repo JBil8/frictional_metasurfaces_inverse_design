@@ -1,3 +1,9 @@
+from utils.seeding import set_seed
+from utils.optimizer import refine_topology
+from utils.config import load_config
+from physics.differentiable import AxisymmetricContactLayer
+from ml_models.model_mlp import SurfaceInverseModel
+from utils.interpolation import batched_interp1d
 import sys
 import os
 import torch
@@ -21,12 +27,6 @@ project_root = os.path.abspath(os.path.join(current_dir, '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from utils.interpolation import batched_interp1d
-from ml_models.model_mlp import SurfaceInverseModel
-from physics.differentiable import AxisymmetricContactLayer
-from utils.config import load_config
-from utils.optimizer import refine_topology
-from utils.seeding import set_seed
 
 try:
     from validation.targets import TargetGenerator
@@ -39,10 +39,14 @@ class UnifiedValidator:
         if not os.path.exists(cfg_path):
             cfg_path = os.path.join("..", cfg_path)
         self.cfg = load_config(cfg_path)
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
+        self.device = torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu")
+
         self.n_asp = self.cfg['physics']['n_asperities']
         self.steps = self.cfg['data']['n_steps']
+
+        self.gamma_max = self.cfg['physics']['gamma_max']
+        self.gamma_min = self.cfg['physics']['gamma_min']
 
         # 1. Establish Intensive Limits
         print("[Validator] Loading dataset for exact normalization limits...")
@@ -61,9 +65,10 @@ class UnifiedValidator:
         model_name = self.cfg['model']['name']
         if not os.path.exists(model_name):
             model_name = os.path.join("..", model_name)
-            
+
         print(f"[Validator] Loading model from {model_name}...")
-        self.model.load_state_dict(torch.load(model_name, map_location=self.device))
+        self.model.load_state_dict(torch.load(
+            model_name, map_location=self.device))
         self.model.eval()
 
         self.gen = TargetGenerator(self.phys, self.cfg, self.device)
@@ -76,22 +81,28 @@ class UnifiedValidator:
     # -------------------------------------------------------------------------
 
     def _get_target(self, target_type):
-        if target_type == "linear": return self.gen.get_consistent_linear_coulomb()
-        if target_type == "saturate": return self.gen.get_consistent_saturating()
-        if target_type == "bilinear": return self.gen.get_consistent_bilinear()
-        if target_type == "quadratic": return self.gen.get_consistent_quadratic()
+        if target_type == "linear":
+            return self.gen.get_consistent_linear_coulomb()
+        if target_type == "saturate":
+            return self.gen.get_consistent_saturating()
+        if target_type == "bilinear":
+            return self.gen.get_consistent_bilinear()
+        if target_type == "quadratic":
+            return self.gen.get_consistent_quadratic()
         raise ValueError(f"Unknown target type: {target_type}")
 
     def _run_refinement(self, t_p, t_alpha, n_init, h_init, lock_n=False, **kwargs):
-        # Note: L-BFGS optimizer requires the global unscaled p_grid if your old optimizer 
+        # Note: L-BFGS optimizer requires the global unscaled p_grid if your old optimizer
         # code hasn't been updated to use the hat notation yet. We pass a mock grid here
         # or you can update `refine_topology` to use absolute comparisons.
-        dummy_p_grid = torch.linspace(0, self.MAX_P, self.steps).to(self.device)
+        dummy_p_grid = torch.linspace(
+            0, self.MAX_P, self.steps).to(self.device)
         return refine_topology(
             target_alpha=t_alpha, target_p=t_p,
             n_init=n_init, h_init=h_init,
             phys_engine=self.phys, p_star_grid=dummy_p_grid,
             t_w=self.gen.t_w, indentations=self.gen.indentations,
+            gamma_min=self.gamma_min, gamma_max=self.gamma_max,
             lock_n=lock_n, **kwargs
         )
 
@@ -107,8 +118,10 @@ class UnifiedValidator:
         s_hat = native_s * (a_max / p_max)
 
         # 3. Interpolate onto standard [0,1] grid
-        a_interp = batched_interp1d(self.p_hat_grid, p_hat, a_hat, pad_value=1.0)
-        s_interp = batched_interp1d(self.p_hat_grid, p_hat, s_hat, pad_value=0.0)
+        a_interp = batched_interp1d(
+            self.p_hat_grid, p_hat, a_hat, pad_value=1.0)
+        s_interp = batched_interp1d(
+            self.p_hat_grid, p_hat, s_hat, pad_value=0.0)
 
         # 4. Pack for model
         x_arrays = torch.stack([a_interp, s_interp], dim=1)
@@ -124,8 +137,9 @@ class UnifiedValidator:
         print("[Validator] Reconstructing Test Split to find unseen samples...")
         total_len = self.gen.total_samples
         train_len, val_len = int(0.8 * total_len), int(0.1 * total_len)
-        
-        _, _, test_ds = random_split(range(total_len), [train_len, val_len, total_len - train_len - val_len], generator=torch.Generator().manual_seed(42))
+
+        _, _, test_ds = random_split(range(total_len), [
+                                     train_len, val_len, total_len - train_len - val_len], generator=torch.Generator().manual_seed(42))
 
         categorized = {k: [] for k in self.gen.ranges}
         for idx in test_ds.indices:
@@ -137,21 +151,26 @@ class UnifiedValidator:
 
     def validate_on_test_set(self, refine=True):
         for category, indices in self.get_test_set_indices_by_category().items():
-            if not indices: continue
+            if not indices:
+                continue
 
             idx = np.random.choice(indices) + 1
             print(f"\nValidating {category.upper()} on Test Sample #{idx}...")
 
-            t_p, t_a, t_s, gt_n, gt_h, _ = self.gen.get_custom_sample(idx, category)
+            t_p, t_a, t_s, gt_n, gt_h, _ = self.gen.get_custom_sample(
+                idx, category)
             x_arr, x_scal_log = self.prepare_nn_input(t_p, t_a, t_s)
 
             with torch.no_grad():
                 n_pred, h_pred = self.model(x_arr, x_scal_log)
-                h_anchored = torch.sort(h_pred, dim=1)[0] - torch.sort(h_pred, dim=1)[0][:, 0:1]
-                p_nn, a_nn, s_nn = self.phys(h_anchored, n_pred, self.gen.t_w, self.gen.indentations, k_steepness=1e5)
+                h_anchored = torch.sort(h_pred, dim=1)[
+                    0] - torch.sort(h_pred, dim=1)[0][:, 0:1]
+                p_nn, a_nn, s_nn = self.phys(
+                    h_anchored, n_pred, self.gen.t_w, self.gen.indentations, k_steepness=1e5)
 
             if refine:
-                n_ref, h_ref, p_ref, a_ref, s_ref = self._run_refinement(t_p, t_a, n_pred, h_pred)
+                n_ref, h_ref, p_ref, a_ref, s_ref = self._run_refinement(
+                    t_p, t_a, n_pred, h_pred)
                 self.plot_triple_comparison(
                     t_p, t_a, t_s, gt_n, gt_h,
                     p_nn, a_nn, s_nn, n_pred, h_anchored,
@@ -164,17 +183,21 @@ class UnifiedValidator:
                 )
 
     def validate_designed(self, target_type="linear", refine=False):
-        print(f"\n[Validator] Generating fresh synthetic target: {target_type}...")
+        print(
+            f"\n[Validator] Generating fresh synthetic target: {target_type}...")
         t_p, t_a, t_s, title = self._get_target(target_type)
         x_arr, x_scal_log = self.prepare_nn_input(t_p, t_a, t_s)
 
         with torch.no_grad():
             n_pred, h_pred = self.model(x_arr, x_scal_log)
-            h_anchored = torch.sort(h_pred, dim=1)[0] - torch.sort(h_pred, dim=1)[0][:, 0:1]
-            p_nn, a_nn, s_nn = self.phys(h_anchored, n_pred, self.gen.t_w, self.gen.indentations, k_steepness=1e5)
+            h_anchored = torch.sort(h_pred, dim=1)[
+                0] - torch.sort(h_pred, dim=1)[0][:, 0:1]
+            p_nn, a_nn, s_nn = self.phys(
+                h_anchored, n_pred, self.gen.t_w, self.gen.indentations, k_steepness=1e5)
 
         if refine:
-            n_ref, h_ref, p_ref, a_ref, s_ref = self._run_refinement(t_p, t_a, n_pred, h_pred)
+            n_ref, h_ref, p_ref, a_ref, s_ref = self._run_refinement(
+                t_p, t_a, n_pred, h_pred)
             self.plot_triple_comparison(
                 t_p, t_a, t_s, None, None, p_nn, a_nn, s_nn, n_pred, h_anchored,
                 p_ref, a_ref, s_ref, n_ref, h_ref, title=f"Refined: {title}"
@@ -185,14 +208,16 @@ class UnifiedValidator:
             )
 
     def validate_optimization_baseline(self, target_type="quadratic", n_starts=50):
-        print(f"\n[Baseline] Tri-Comparison for {target_type} (CNN vs General Multi vs Hertz Multi)...")
-        
+        print(
+            f"\n[Baseline] Tri-Comparison for {target_type} (CNN vs General Multi vs Hertz Multi)...")
+
         t_p, t_a, t_s, title = self._get_target(target_type)
         x_arr, x_scal_log = self.prepare_nn_input(t_p, t_a, t_s)
 
         def compute_loss(pred_p, pred_a):
             # Compute physical MSE by interpolating predictions onto the exact target P points
-            pred_a_aligned = batched_interp1d(t_p[0], pred_p, pred_a, pad_value=pred_a[0, -1].item())
+            pred_a_aligned = batched_interp1d(
+                t_p[0], pred_p, pred_a, pad_value=pred_a[0, -1].item())
             return torch.mean((pred_a_aligned - t_a)**2)
 
         # --- A: MLP Surrogate ---
@@ -206,11 +231,14 @@ class UnifiedValidator:
         best_loss_B, best_n_B, best_h_B = float('inf'), None, None
         for _ in range(n_starts):
             n_rand = torch.rand(1, self.n_asp).to(self.device) * 2.0 + 1.0
-            h_rand = torch.sort(torch.rand(1, self.n_asp).to(self.device) * self.gen.max_d, dim=1)[0]
-            n_prb, h_prb, p_prb, a_prb, _ = self._run_refinement(t_p, t_a, n_rand, h_rand)
+            h_rand = torch.sort(torch.rand(1, self.n_asp).to(
+                self.device) * self.gen.max_d, dim=1)[0]
+            n_prb, h_prb, p_prb, a_prb, _ = self._run_refinement(
+                t_p, t_a, n_rand, h_rand)
             if (l := compute_loss(p_prb, a_prb).item()) < best_loss_B:
                 best_loss_B, best_n_B, best_h_B = l, n_prb, h_prb
-        n_B, h_B, p_B, a_B, s_B = self._run_refinement(t_p, t_a, best_n_B, best_h_B)
+        n_B, h_B, p_B, a_B, s_B = self._run_refinement(
+            t_p, t_a, best_n_B, best_h_B)
         loss_B = compute_loss(p_B, a_B).item()
         print(f"  > [B] MS General (n=var): {loss_B:.6e}")
 
@@ -218,62 +246,87 @@ class UnifiedValidator:
         best_loss_C, best_h_C = float('inf'), None
         for _ in range(n_starts):
             n_hertz = torch.ones(1, self.n_asp).to(self.device) * 2.0
-            h_rand = torch.sort(torch.rand(1, self.n_asp).to(self.device) * self.gen.max_d, dim=1)[0]
-            _, h_prb, p_prb, a_prb, _ = self._run_refinement(t_p, t_a, n_hertz, h_rand, lock_n=True)
+            h_rand = torch.sort(torch.rand(1, self.n_asp).to(
+                self.device) * self.gen.max_d, dim=1)[0]
+            _, h_prb, p_prb, a_prb, _ = self._run_refinement(
+                t_p, t_a, n_hertz, h_rand, lock_n=True)
             if (l := compute_loss(p_prb, a_prb).item()) < best_loss_C:
                 best_loss_C, best_h_C = l, h_prb
-        n_C, h_C, p_C, a_C, s_C = self._run_refinement(t_p, t_a, torch.ones_like(n_hertz)*2.0, best_h_C, lock_n=True)
+        n_C, h_C, p_C, a_C, s_C = self._run_refinement(
+            t_p, t_a, torch.ones_like(n_hertz)*2.0, best_h_C, lock_n=True)
         loss_C = compute_loss(p_C, a_C).item()
         print(f"  > [C] MS Hertz (n=2):   {loss_C:.6e}")
 
         # --- PLOTTING DIRECTLY ---
         fig, axs = plt.subplots(2, 2, figsize=(16, 12))
-        C_GT, C_CNN, C_GEN, C_HERTZ = '#333333', '#0072B2', '#009E73', '#D55E00' 
+        C_GT, C_CNN, C_GEN, C_HERTZ = '#333333', '#0072B2', '#009E73', '#D55E00'
 
         def style_ax(ax):
-            ax.grid(True, alpha=0.15); ax.tick_params(direction='in', top=True, right=True)
-            ax.ticklabel_format(axis='x', style='sci', scilimits=(0,0))
+            ax.grid(True, alpha=0.15)
+            ax.tick_params(direction='in', top=True, right=True)
+            ax.ticklabel_format(axis='x', style='sci', scilimits=(0, 0))
 
         def plot_stem(ax, x, y, color, marker, label):
             markerline, stemlines, _ = ax.stem(x, y, basefmt=" ")
-            plt.setp(markerline, color=color, marker=marker, markersize=6, label=label)
+            plt.setp(markerline, color=color, marker=marker,
+                     markersize=6, label=label)
             plt.setp(stemlines, color=color, lw=1.5, alpha=0.5)
 
         # Plot absolute arrays directly
-        t_p_np, t_a_np, t_s_np = t_p[0].cpu().numpy(), t_a[0].cpu().numpy(), t_s[0].cpu().numpy()
+        t_p_np, t_a_np, t_s_np = t_p[0].cpu().numpy(
+        ), t_a[0].cpu().numpy(), t_s[0].cpu().numpy()
 
-        axs[0,0].plot(t_p_np, t_a_np, color=C_GT, lw=3, label="Target")
-        axs[0,0].plot(p_C[0].cpu().numpy(), a_C[0].cpu().numpy(), color=C_HERTZ, ls='-.', lw=2, label=f"Hertz (n=2)")
-        axs[0,0].plot(p_B[0].cpu().numpy(), a_B[0].cpu().numpy(), color=C_GEN, ls='--', lw=2, label=f"MS General (n=var)")
-        axs[0,0].plot(p_A[0].cpu().numpy(), a_A[0].cpu().numpy(), color=C_CNN, ls=':', lw=4, label="Surrogate")
-        axs[0,0].set(title="Baseline: Area vs Load", ylabel="Contact Fraction α")
-        style_ax(axs[0,0]); axs[0,0].legend()
+        axs[0, 0].plot(t_p_np, t_a_np, color=C_GT, lw=3, label="Target")
+        axs[0, 0].plot(p_C[0].cpu().numpy(), a_C[0].cpu().numpy(),
+                       color=C_HERTZ, ls='-.', lw=2, label=f"Hertz (n=2)")
+        axs[0, 0].plot(p_B[0].cpu().numpy(), a_B[0].cpu().numpy(),
+                       color=C_GEN, ls='--', lw=2, label=f"MS General (n=var)")
+        axs[0, 0].plot(p_A[0].cpu().numpy(), a_A[0].cpu().numpy(),
+                       color=C_CNN, ls=':', lw=4, label="Surrogate")
+        axs[0, 0].set(title="Baseline: Area vs Load",
+                      ylabel="Contact Fraction α")
+        style_ax(axs[0, 0])
+        axs[0, 0].legend()
 
-        axs[1,0].plot(t_p_np, t_s_np, color=C_GT, lw=3)
-        axs[1,0].plot(p_C[0].cpu().numpy(), s_C[0].cpu().numpy(), color=C_HERTZ, ls='-.', lw=2)
-        axs[1,0].plot(p_B[0].cpu().numpy(), s_B[0].cpu().numpy(), color=C_GEN, ls='--', lw=2)
-        axs[1,0].plot(p_A[0].cpu().numpy(), s_A[0].cpu().numpy(), color=C_CNN, ls=':', lw=4)
-        axs[1,0].set(title="Baseline: Stiffness vs Load", xlabel="Nominal Pressure P*", ylabel="Stiffness S*")
-        style_ax(axs[1,0])
+        axs[1, 0].plot(t_p_np, t_s_np, color=C_GT, lw=3)
+        axs[1, 0].plot(p_C[0].cpu().numpy(), s_C[0].cpu().numpy(),
+                       color=C_HERTZ, ls='-.', lw=2)
+        axs[1, 0].plot(p_B[0].cpu().numpy(), s_B[0].cpu().numpy(),
+                       color=C_GEN, ls='--', lw=2)
+        axs[1, 0].plot(p_A[0].cpu().numpy(), s_A[0].cpu().numpy(),
+                       color=C_CNN, ls=':', lw=4)
+        axs[1, 0].set(title="Baseline: Stiffness vs Load",
+                      xlabel="Nominal Pressure P*", ylabel="Stiffness S*")
+        style_ax(axs[1, 0])
 
         idx = np.arange(self.n_asp)
-        s_A, s_B, s_C = [torch.argsort(h[0]).cpu().numpy() for h in [h_A, h_B, h_C]]
+        s_A, s_B, s_C = [torch.argsort(h[0]).cpu().numpy()
+                         for h in [h_A, h_B, h_C]]
 
-        plot_stem(axs[0,1], idx - 0.2, h_C[0][s_C].cpu().numpy(), C_HERTZ, 'D', 'Hertz')
-        plot_stem(axs[0,1], idx, h_B[0][s_B].cpu().numpy(), C_GEN, '^', 'MS General')
-        plot_stem(axs[0,1], idx + 0.2, h_A[0][s_A].cpu().numpy(), C_CNN, 's', 'Surrogate')
-        axs[0,1].set(title="Optimized Heights", ylabel="h [m]"); axs[0,1].legend()
+        plot_stem(axs[0, 1], idx - 0.2, h_C[0]
+                  [s_C].cpu().numpy(), C_HERTZ, 'D', 'Hertz')
+        plot_stem(axs[0, 1], idx, h_B[0][s_B].cpu().numpy(),
+                  C_GEN, '^', 'MS General')
+        plot_stem(axs[0, 1], idx + 0.2, h_A[0]
+                  [s_A].cpu().numpy(), C_CNN, 's', 'Surrogate')
+        axs[0, 1].set(title="Optimized Heights", ylabel="h [m]")
+        axs[0, 1].legend()
 
-        axs[1,1].axhline(2.0, color=C_HERTZ, ls='-', alpha=0.3)
-        plot_stem(axs[1,1], idx - 0.2, n_C[0][s_C].detach().numpy(), C_HERTZ, 'D', 'Hertz')
-        plot_stem(axs[1,1], idx, n_B[0][s_B].detach().numpy(), C_GEN, '^', 'MS General')
-        plot_stem(axs[1,1], idx + 0.2, n_A[0][s_A].detach().numpy(), C_CNN, 's', 'Surrogate')
-        axs[1,1].set(title="Optimized Exponents", xlabel="Asperity Index", ylabel="n [-]", ylim=(0.8, 3.2))
-        axs[1,1].legend(loc='lower right', fontsize='small')
+        axs[1, 1].axhline(2.0, color=C_HERTZ, ls='-', alpha=0.3)
+        plot_stem(axs[1, 1], idx - 0.2, n_C[0]
+                  [s_C].detach().numpy(), C_HERTZ, 'D', 'Hertz')
+        plot_stem(axs[1, 1], idx, n_B[0][s_B].detach().numpy(),
+                  C_GEN, '^', 'MS General')
+        plot_stem(axs[1, 1], idx + 0.2, n_A[0]
+                  [s_A].detach().numpy(), C_CNN, 's', 'Surrogate')
+        axs[1, 1].set(title="Optimized Exponents",
+                      xlabel="Asperity Index", ylabel="n [-]", ylim=(0.8, 3.2))
+        axs[1, 1].legend(loc='lower right', fontsize='small')
 
         plt.tight_layout()
         os.makedirs("plots", exist_ok=True)
-        plt.savefig(f"plots/baseline_3way_{target_type}.png", dpi=150); plt.close()
+        plt.savefig(f"plots/baseline_3way_{target_type}.png", dpi=150)
+        plt.close()
 
     # -------------------------------------------------------------------------
     # PLOTTING LOGIC
@@ -284,43 +337,47 @@ class UnifiedValidator:
 
         fig, axs = plt.subplots(2, 3, figsize=(14, 8))
         axs = axs.flatten()
-        C_DATA = '#2F4F4F' 
+        C_DATA = '#2F4F4F'
         panel_labels = ['(a)', '(b)', '(c)', '(d)', '(e)', '(f)']
 
         for i, (category, indices) in enumerate(categorized_indices.items()):
-            if i >= 6: break 
+            if i >= 6:
+                break
             ax = axs[i]
-            
+
             if not indices:
-                ax.text(0.5, 0.5, f"No Test Data:\n{category}", ha='center', va='center')
+                ax.text(
+                    0.5, 0.5, f"No Test Data:\n{category}", ha='center', va='center')
                 continue
 
-            idx = np.random.choice(indices) + 1 
+            idx = np.random.choice(indices) + 1
             t_p, t_a, _, _, _, _ = self.gen.get_custom_sample(idx, category)
-            
+
             # Plot the raw unscaled physics directly!
             t_p_np = t_p[0].cpu().numpy()
             t_a_np = t_a[0].cpu().numpy()
 
-            ax.plot(t_p_np, t_a_np, color=C_DATA, linewidth=3, solid_capstyle='round')
-            
+            ax.plot(t_p_np, t_a_np, color=C_DATA,
+                    linewidth=3, solid_capstyle='round')
+
             ax.grid(True, linestyle='--', alpha=0.4, color='gray')
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
-            
-            ax.set_title(category.replace("_", " ").title(), fontsize=14, pad=12, fontweight='bold')
-            ax.text(0.05, 0.90, panel_labels[i], transform=ax.transAxes, 
+
+            ax.set_title(category.replace("_", " ").title(),
+                         fontsize=14, pad=12, fontweight='bold')
+            ax.text(0.05, 0.90, panel_labels[i], transform=ax.transAxes,
                     fontsize=14, fontweight='bold', va='top')
-            
-            ax.ticklabel_format(axis='x', style='sci', scilimits=(0,0))
-            ax.set_xlim(0, t_p_np.max() * 1.05) # Local scaling
+
+            ax.ticklabel_format(axis='x', style='sci', scilimits=(0, 0))
+            ax.set_xlim(0, t_p_np.max() * 1.05)  # Local scaling
             ax.set_ylim(0, t_a_np.max() * 1.1)
-            
+
             ax.set_xlabel('$P^*$', fontsize=13)
             ax.set_ylabel(r'$\alpha$', fontsize=13)
 
         plt.tight_layout()
-        plt.subplots_adjust(hspace=0.25, wspace=0.2) 
+        plt.subplots_adjust(hspace=0.25, wspace=0.2)
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, dpi=300, bbox_inches='tight', transparent=False)
 
@@ -333,9 +390,10 @@ class UnifiedValidator:
         categorized_indices = self.get_test_set_indices_by_category()
 
         # Setup 2x3 grid (better for landscape paper layouts)
-        fig, axs = plt.subplots(2, 3, figsize=(10, 6), sharex=True, sharey=True)
+        fig, axs = plt.subplots(2, 3, figsize=(
+            10, 6), sharex=True, sharey=True)
         axs = axs.flatten()
-        
+
         # Styling palette
         C_GT = '#333333'  # Dark Charcoal for Target
         C_NN = '#0072B2'  # Teal/Blue for NN Prediction
@@ -354,32 +412,36 @@ class UnifiedValidator:
         }
 
         for i, (category, indices) in enumerate(categorized_indices.items()):
-            if i >= 6: break # Safety limit for 6 subplots
-            
-            display_title = paper_names.get(category, category.replace("_", " ").title())
+            if i >= 6:
+                break  # Safety limit for 6 subplots
+
+            display_title = paper_names.get(
+                category, category.replace("_", " ").title())
 
             ax = axs[i]
             if not indices:
-                ax.text(0.5, 0.5, f"No Test Data:\n{category}", ha='center', va='center')
+                ax.text(
+                    0.5, 0.5, f"No Test Data:\n{category}", ha='center', va='center')
                 continue
 
             # 1. Pick random unseen sample
-            idx = np.random.choice(indices) + 1 
-            
+            idx = np.random.choice(indices) + 1
+
             # 2. Fetch Ground Truth
             t_p, t_a, t_s, _, _, _ = self.gen.get_custom_sample(idx, category)
-            
-            # rename categories
 
+            # rename categories
 
             # 3. Prepare Input and Run Model
             x_arr, x_scal_log = self.prepare_nn_input(t_p, t_a, t_s)
             with torch.no_grad():
                 n_pred, h_pred = self.model(x_arr, x_scal_log)
                 # Anchor heights to 0
-                h_anchored = torch.sort(h_pred, dim=1)[0] - torch.sort(h_pred, dim=1)[0][:, 0:1]
+                h_anchored = torch.sort(h_pred, dim=1)[
+                    0] - torch.sort(h_pred, dim=1)[0][:, 0:1]
                 # Run through Sneddon physics engine
-                p_nn, a_nn, _ = self.phys(h_anchored, n_pred, self.gen.t_w, self.gen.indentations, k_steepness=1e5)
+                p_nn, a_nn, _ = self.phys(
+                    h_anchored, n_pred, self.gen.t_w, self.gen.indentations, k_steepness=1e5)
 
             # 4. Convert to absolute numpy arrays
             t_p_np = t_p[0].cpu().numpy()
@@ -388,35 +450,37 @@ class UnifiedValidator:
             p_a_np = a_nn[0].cpu().numpy()
 
             # 5. Plotting
-            ax.plot(t_p_np, t_a_np, color=C_GT, lw=3, label="Target" if i==0 else "")
-            ax.plot(p_p_np, p_a_np, color=C_NN, linestyle='--', lw=2.5, label="Prediction" if i==0 else "")
-            
+            ax.plot(t_p_np, t_a_np, color=C_GT, lw=3,
+                    label="Target" if i == 0 else "")
+            ax.plot(p_p_np, p_a_np, color=C_NN, linestyle='--',
+                    lw=2.5, label="Prediction" if i == 0 else "")
+
             # 6. Clean Formatting
             ax.grid(True, linestyle='--', alpha=0.4, color='gray')
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
-            
-            ax.text(0.5, 0.15, display_title, 
-            transform=ax.transAxes, 
-            fontsize=14, 
-            fontweight='bold', 
-            ha='center', 
-            va='top',
-            # Optional: Add a subtle semi-transparent white box behind the text 
-            # so the grid or data lines don't make it hard to read.
-            bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=3))
 
-            ax.text(0.05, 0.90, panel_labels[i], transform=ax.transAxes, 
+            ax.text(0.5, 0.15, display_title,
+                    transform=ax.transAxes,
+                    fontsize=14,
+                    fontweight='bold',
+                    ha='center',
+                    va='top',
+                    # Optional: Add a subtle semi-transparent white box behind the text
+                    # so the grid or data lines don't make it hard to read.
+                    bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=3))
+
+            ax.text(0.05, 0.90, panel_labels[i], transform=ax.transAxes,
                     fontsize=14, fontweight='bold', va='top')
-            
-            ax.ticklabel_format(axis='x', style='sci', scilimits=(0,0))
-            
+
+            ax.ticklabel_format(axis='x', style='sci', scilimits=(0, 0))
+
             # Dynamic Local Axis Scaling
             max_p = max(t_p_np.max(), p_p_np.max())
             max_a = max(t_a_np.max(), p_a_np.max())
             # ax.set_xlim(0, max_p * 1.05)
             # ax.set_ylim(0, max_a * 1.1)
-            
+
             if i >= 3:
                 ax.set_xlabel('$P^*$', fontsize=13)
             if i % 3 == 0:
@@ -426,7 +490,7 @@ class UnifiedValidator:
         axs[0].legend(loc='right', frameon=False, fontsize=14)
 
         plt.tight_layout()
-        plt.subplots_adjust(hspace=0.3, wspace=0.25) 
+        plt.subplots_adjust(hspace=0.3, wspace=0.25)
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, dpi=300, bbox_inches='tight', transparent=False)
         print(f"  > Saved 6-panel grid to {save_path}")
@@ -439,48 +503,63 @@ class UnifiedValidator:
         def style_ax(ax):
             ax.grid(True, alpha=0.15, color='gray')
             ax.tick_params(axis='both', direction='in', top=True, right=True)
-            ax.ticklabel_format(axis='x', style='sci', scilimits=(0,0))
+            ax.ticklabel_format(axis='x', style='sci', scilimits=(0, 0))
 
         def plot_stem(ax, x, y, color, marker, label):
             markerline, stemlines, baseline = ax.stem(x, y, basefmt=" ")
             plt.setp(markerline, color=color, marker=marker, markersize=7)
-            plt.setp(stemlines, color=color, linestyle='-', linewidth=2, alpha=0.6)
+            plt.setp(stemlines, color=color,
+                     linestyle='-', linewidth=2, alpha=0.6)
             markerline.set_label(label)
 
         # Plot raw absolute data
-        t_p_np, t_a_np, t_s_np = t_p[0].cpu().numpy(), t_a[0].cpu().numpy(), t_s[0].cpu().numpy()
-        p_p_np, p_a_np, p_s_np = p_nn[0].cpu().numpy(), a_nn[0].cpu().numpy(), s_nn[0].cpu().numpy()
+        t_p_np, t_a_np, t_s_np = t_p[0].cpu().numpy(
+        ), t_a[0].cpu().numpy(), t_s[0].cpu().numpy()
+        p_p_np, p_a_np, p_s_np = p_nn[0].cpu().numpy(
+        ), a_nn[0].cpu().numpy(), s_nn[0].cpu().numpy()
 
         axs[0, 0].plot(t_p_np, t_a_np, color=C_GT, lw=3, label="Target")
-        axs[0, 0].plot(p_p_np, p_a_np, color=C_NN, linestyle='--', lw=2.5, label="Prediction")
+        axs[0, 0].plot(p_p_np, p_a_np, color=C_NN,
+                       linestyle='--', lw=2.5, label="Prediction")
         axs[0, 0].set(xlabel="$P^*$", ylabel=r"$\alpha$")
-        style_ax(axs[0, 0]); axs[0, 0].legend()
+        style_ax(axs[0, 0])
+        axs[0, 0].legend()
 
         axs[1, 0].plot(t_p_np, t_s_np, color=C_GT, lw=3, label="Target")
-        axs[1, 0].plot(p_p_np, p_s_np, color=C_NN, linestyle='--', lw=2.5, label="Prediction")
+        axs[1, 0].plot(p_p_np, p_s_np, color=C_NN,
+                       linestyle='--', lw=2.5, label="Prediction")
         axs[1, 0].set(xlabel="$P^*$", ylabel="$S^*$")
-        style_ax(axs[1, 0]) #; axs[1, 0].legend()
+        style_ax(axs[1, 0])  # ; axs[1, 0].legend()
 
         idx = np.arange(h_nn.shape[1])
         s_idx_nn = torch.argsort(h_nn[0]).cpu().numpy()
 
         if gt_h is not None:
             s_idx_gt = torch.argsort(gt_h[0]).cpu().numpy()
-            plot_stem(axs[0, 1], idx - 0.1, gt_h[0][s_idx_gt].cpu().numpy(), C_GT, 'o', 'Ground Truth')
-            plot_stem(axs[0, 1], idx + 0.1, h_nn[0][s_idx_nn].detach().cpu().numpy(), C_NN, 's', 'Prediction')
-            plot_stem(axs[1, 1], idx - 0.1, gt_n[0][s_idx_gt].cpu().numpy(), C_GT, 'o', 'Ground Truth')
-            plot_stem(axs[1, 1], idx + 0.1, n_nn[0][s_idx_nn].detach().cpu().numpy(), C_NN, 's', 'Prediction')
+            plot_stem(axs[0, 1], idx - 0.1, gt_h[0]
+                      [s_idx_gt].cpu().numpy(), C_GT, 'o', 'Ground Truth')
+            plot_stem(axs[0, 1], idx + 0.1, h_nn[0]
+                      [s_idx_nn].detach().cpu().numpy(), C_NN, 's', 'Prediction')
+            plot_stem(axs[1, 1], idx - 0.1, gt_n[0]
+                      [s_idx_gt].cpu().numpy(), C_GT, 'o', 'Ground Truth')
+            plot_stem(axs[1, 1], idx + 0.1, n_nn[0]
+                      [s_idx_nn].detach().cpu().numpy(), C_NN, 's', 'Prediction')
         else:
-            plot_stem(axs[0, 1], idx, h_nn[0][s_idx_nn].detach().cpu().numpy(), C_NN, 's', 'Prediction')
-            plot_stem(axs[1, 1], idx, n_nn[0][s_idx_nn].detach().cpu().numpy(), C_NN, 's', 'Prediction')
+            plot_stem(axs[0, 1], idx, h_nn[0][s_idx_nn].detach(
+            ).cpu().numpy(), C_NN, 's', 'Prediction')
+            plot_stem(axs[1, 1], idx, n_nn[0][s_idx_nn].detach(
+            ).cpu().numpy(), C_NN, 's', 'Prediction')
 
         axs[0, 1].set(xlabel="Asperity Index", ylabel="$h/R$")
-        axs[1, 1].set(xlabel="Asperity Index", ylabel=r"Exponent $\gamma$", ylim=(0.8, 3.2))
-        axs[0, 1].grid(True, alpha=0.15); axs[1, 1].grid(True, alpha=0.15)
+        axs[1, 1].set(xlabel="Asperity Index",
+                      ylabel=r"Exponent $\gamma$", ylim=(0.8, 3.2))
+        axs[0, 1].grid(True, alpha=0.15)
+        axs[1, 1].grid(True, alpha=0.15)
         # axs[0, 1].legend() ; axs[1, 1].legend()
 
         os.makedirs("plots", exist_ok=True)
-        sname = title.split(":")[1].strip().split(" ")[0].lower() if ":" in title else title.split(" ")[0].lower()
+        sname = title.split(":")[1].strip().split(
+            " ")[0].lower() if ":" in title else title.split(" ")[0].lower()
         plt.tight_layout()
         plt.savefig(f"plots/val_{sname}.png", dpi=150)
         plt.close()
@@ -492,29 +571,41 @@ class UnifiedValidator:
         def style_ax(ax):
             ax.grid(True, alpha=0.15, color='gray')
             ax.tick_params(axis='both', direction='in', top=True, right=True)
-            ax.ticklabel_format(axis='x', style='sci', scilimits=(0,0))
+            ax.ticklabel_format(axis='x', style='sci', scilimits=(0, 0))
 
         def plot_stem(ax, x, y, color, marker, label):
             markerline, stemlines, baseline = ax.stem(x, y, basefmt=" ")
             plt.setp(markerline, color=color, marker=marker, markersize=7)
-            plt.setp(stemlines, color=color, linestyle='-', linewidth=2, alpha=0.6)
+            plt.setp(stemlines, color=color,
+                     linestyle='-', linewidth=2, alpha=0.6)
             markerline.set_label(label)
 
-        t_p_np, t_a_np, t_s_np = t_p[0].cpu().numpy(), t_a[0].cpu().numpy(), t_s[0].cpu().numpy()
-        p_p_np, p_a_np, p_s_np = p_nn[0].cpu().numpy(), a_nn[0].cpu().numpy(), s_nn[0].cpu().numpy()
-        r_p_np, r_a_np, r_s_np = p_ref[0].cpu().numpy(), a_ref[0].cpu().numpy(), s_ref[0].cpu().numpy()
+        t_p_np, t_a_np, t_s_np = t_p[0].cpu().numpy(
+        ), t_a[0].cpu().numpy(), t_s[0].cpu().numpy()
+        p_p_np, p_a_np, p_s_np = p_nn[0].cpu().numpy(
+        ), a_nn[0].cpu().numpy(), s_nn[0].cpu().numpy()
+        r_p_np, r_a_np, r_s_np = p_ref[0].cpu().numpy(
+        ), a_ref[0].cpu().numpy(), s_ref[0].cpu().numpy()
 
         axs[0, 0].plot(t_p_np, t_a_np, color=C_GT, lw=3, label="Target")
-        axs[0, 0].plot(p_p_np, p_a_np, color=C_NN, linestyle='--', lw=2.5, label="Zero-Shot (NN)")
-        axs[0, 0].plot(r_p_np, r_a_np, color=C_REF, linestyle=':', lw=3.5, label="Refined (Opt)")
-        axs[0, 0].set(title="Contact Area vs Load", xlabel="Nominal Pressure P*", ylabel="Contact Fraction α")
-        style_ax(axs[0, 0]); axs[0, 0].legend()
+        axs[0, 0].plot(p_p_np, p_a_np, color=C_NN,
+                       linestyle='--', lw=2.5, label="Zero-Shot (NN)")
+        axs[0, 0].plot(r_p_np, r_a_np, color=C_REF,
+                       linestyle=':', lw=3.5, label="Refined (Opt)")
+        axs[0, 0].set(title="Contact Area vs Load",
+                      xlabel="Nominal Pressure P*", ylabel="Contact Fraction α")
+        style_ax(axs[0, 0])
+        axs[0, 0].legend()
 
         axs[1, 0].plot(t_p_np, t_s_np, color=C_GT, lw=3, label="Target")
-        axs[1, 0].plot(p_p_np, p_s_np, color=C_NN, linestyle='--', lw=2.5, label="Zero-Shot (NN)")
-        axs[1, 0].plot(r_p_np, r_s_np, color=C_REF, linestyle=':', lw=3.5, label="Refined (Opt)")
-        axs[1, 0].set(title="Topological Stiffness", xlabel="Nominal Pressure P*", ylabel="Stiffness S*")
-        style_ax(axs[1, 0]); axs[1, 0].legend()
+        axs[1, 0].plot(p_p_np, p_s_np, color=C_NN,
+                       linestyle='--', lw=2.5, label="Zero-Shot (NN)")
+        axs[1, 0].plot(r_p_np, r_s_np, color=C_REF,
+                       linestyle=':', lw=3.5, label="Refined (Opt)")
+        axs[1, 0].set(title="Topological Stiffness",
+                      xlabel="Nominal Pressure P*", ylabel="Stiffness S*")
+        style_ax(axs[1, 0])
+        axs[1, 0].legend()
 
         idx = np.arange(h_nn.shape[1])
         s_nn_idx = torch.argsort(h_nn[0]).cpu().numpy()
@@ -522,27 +613,42 @@ class UnifiedValidator:
 
         if gt_h is not None:
             s_gt_idx = torch.argsort(gt_h[0]).cpu().numpy()
-            plot_stem(axs[0, 1], idx - 0.15, gt_h[0][s_gt_idx].cpu().numpy(), C_GT, 'o', 'Ground Truth')
-            plot_stem(axs[0, 1], idx, h_nn[0][s_nn_idx].detach().cpu().numpy(), C_NN, 's', 'NN Pred')
-            plot_stem(axs[0, 1], idx + 0.15, h_ref[0][s_ref_idx].detach().cpu().numpy(), C_REF, '^', 'Refined')
-            
-            plot_stem(axs[1, 1], idx - 0.15, gt_n[0][s_gt_idx].cpu().numpy(), C_GT, 'o', 'Ground Truth')
-            plot_stem(axs[1, 1], idx, n_nn[0][s_nn_idx].detach().cpu().numpy(), C_NN, 's', 'NN Pred')
-            plot_stem(axs[1, 1], idx + 0.15, n_ref[0][s_ref_idx].detach().cpu().numpy(), C_REF, '^', 'Refined')
-        else:
-            plot_stem(axs[0, 1], idx - 0.1, h_nn[0][s_nn_idx].detach().cpu().numpy(), C_NN, 's', 'NN Pred')
-            plot_stem(axs[0, 1], idx + 0.1, h_ref[0][s_ref_idx].detach().cpu().numpy(), C_REF, '^', 'Refined')
-            
-            plot_stem(axs[1, 1], idx - 0.1, n_nn[0][s_nn_idx].detach().cpu().numpy(), C_NN, 's', 'NN Pred')
-            plot_stem(axs[1, 1], idx + 0.1, n_ref[0][s_ref_idx].detach().cpu().numpy(), C_REF, '^', 'Refined')
+            plot_stem(axs[0, 1], idx - 0.15, gt_h[0]
+                      [s_gt_idx].cpu().numpy(), C_GT, 'o', 'Ground Truth')
+            plot_stem(axs[0, 1], idx, h_nn[0][s_nn_idx].detach(
+            ).cpu().numpy(), C_NN, 's', 'NN Pred')
+            plot_stem(axs[0, 1], idx + 0.15, h_ref[0]
+                      [s_ref_idx].detach().cpu().numpy(), C_REF, '^', 'Refined')
 
-        axs[0, 1].set(title="Predicted Heights", xlabel="Asperity Index", ylabel="Height h [m]")
-        axs[1, 1].set(title="Shape Exponent Distribution", xlabel="Asperity Index", ylabel="Exponent n [-]", ylim=(0.8, 3.2))
-        axs[0, 1].grid(True, alpha=0.15); axs[1, 1].grid(True, alpha=0.15)
-        axs[0, 1].legend(); axs[1, 1].legend(loc='lower right', fontsize='small')
+            plot_stem(axs[1, 1], idx - 0.15, gt_n[0]
+                      [s_gt_idx].cpu().numpy(), C_GT, 'o', 'Ground Truth')
+            plot_stem(axs[1, 1], idx, n_nn[0][s_nn_idx].detach(
+            ).cpu().numpy(), C_NN, 's', 'NN Pred')
+            plot_stem(axs[1, 1], idx + 0.15, n_ref[0]
+                      [s_ref_idx].detach().cpu().numpy(), C_REF, '^', 'Refined')
+        else:
+            plot_stem(axs[0, 1], idx - 0.1, h_nn[0]
+                      [s_nn_idx].detach().cpu().numpy(), C_NN, 's', 'NN Pred')
+            plot_stem(axs[0, 1], idx + 0.1, h_ref[0]
+                      [s_ref_idx].detach().cpu().numpy(), C_REF, '^', 'Refined')
+
+            plot_stem(axs[1, 1], idx - 0.1, n_nn[0]
+                      [s_nn_idx].detach().cpu().numpy(), C_NN, 's', 'NN Pred')
+            plot_stem(axs[1, 1], idx + 0.1, n_ref[0]
+                      [s_ref_idx].detach().cpu().numpy(), C_REF, '^', 'Refined')
+
+        axs[0, 1].set(title="Predicted Heights",
+                      xlabel="Asperity Index", ylabel="Height h [m]")
+        axs[1, 1].set(title="Shape Exponent Distribution",
+                      xlabel="Asperity Index", ylabel="Exponent n [-]", ylim=(0.8, 3.2))
+        axs[0, 1].grid(True, alpha=0.15)
+        axs[1, 1].grid(True, alpha=0.15)
+        axs[0, 1].legend()
+        axs[1, 1].legend(loc='lower right', fontsize='small')
 
         os.makedirs("plots", exist_ok=True)
-        sname = title.split(":")[1].strip().split(" ")[0].lower() if ":" in title else "sample"
+        sname = title.split(":")[1].strip().split(
+            " ")[0].lower() if ":" in title else "sample"
         plt.tight_layout()
         plt.savefig(f"plots/val_test_{sname}.png", dpi=150)
         plt.close()
@@ -551,17 +657,17 @@ class UnifiedValidator:
 if __name__ == "__main__":
     val = UnifiedValidator("config.yaml")
     set_seed()
-    
+
     val.plot_test_set_reconstructions_grid()
     # Generate Figure 2 for the paper
     # val.plot_test_set_overview()
-    
+
     # Optional baseline executions
     # val.validate_on_test_set(refine=False)
     # val.validate_designed(target_type="linear", refine=True)
     # val.validate_designed(target_type="saturate", refine=True)
     # val.validate_designed(target_type="bilinear", refine=True)
-    
+
     # val.validate_optimization_baseline(target_type="saturate")
     # val.validate_optimization_baseline(target_type="bilinear")
     # val.validate_optimization_baseline(target_type="linear")

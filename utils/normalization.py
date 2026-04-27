@@ -11,10 +11,12 @@ def get_theoretical_limits(cfg, device):
     n_asp = cfg['physics']['n_asperities']
     R = cfg['physics']['radius']
     max_d = cfg['physics']['max_delta_ratio'] * R
+    gamma_max = cfg['physics']['gamma_max']
+
 
     # 1. Create the "Ultimate Wall" (All Pseudo-Flat Punches touching at h=0)
     h_wall = torch.zeros(1, n_asp).to(device)
-    n_wall = torch.ones(1, n_asp).to(device) * 3.0  # Max bounded exponent
+    gamma_wall = torch.ones(1, n_asp).to(device) * gamma_max  # Max bounded exponent
     w_wall = torch.ones(1, n_asp).to(device) * 2.0 * R
 
     # Use the exact step count to ensure matching array sizes
@@ -22,7 +24,7 @@ def get_theoretical_limits(cfg, device):
     ind = torch.linspace(0, max_d, steps).unsqueeze(0).to(device)
 
     with torch.no_grad():
-        p_max, alpha_max, dp_dalpha_max = phys(h_wall, n_wall, w_wall, ind, k_steepness=1e5)
+        p_max, alpha_max, dp_dalpha_max = phys(h_wall, gamma_wall, w_wall, ind, k_steepness=1e5)
 
     return {
         "max_pressure": p_max.max().item(),

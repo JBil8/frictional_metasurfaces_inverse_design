@@ -5,7 +5,9 @@ import numpy as np
 
 from utils.interpolation import batched_interp1d
 
-def refine_topology(target_alpha, target_p, n_init, h_init, phys_engine, p_star_grid, t_w, indentations, k_start=1e3, k_end=1e5, stages=5, steps_per_stage=5, w_bounds=0.1, lock_n=False):
+def refine_topology(target_alpha, target_p, n_init, h_init, phys_engine, p_star_grid, t_w,
+                    indentations, gamma_min=1.8, gamma_max=4.0, k_start=1e3, k_end=1e5, 
+                    stages=5, steps_per_stage=5, w_bounds=0.1, lock_n=False):
     """
     Refines the initial topography guess using Multi-Stage Homotopy L-BFGS.
     If lock_n=True, it strictly enforces Hertzian spherical asperities (n=2).
@@ -20,7 +22,8 @@ def refine_topology(target_alpha, target_p, n_init, h_init, phys_engine, p_star_
 
     # --- N Initialization (Conditional) ---
     if not lock_n:
-        n_clamped = torch.clamp((n_init - 1.0) / 2.0, 1e-4, 1.0 - 1e-4)
+        # INVERSE MAPPING: Dynamically invert the bounds to find the starting logit
+        n_clamped = torch.clamp((n_init - gamma_min) / (gamma_max - gamma_min), 1e-4, 1.0 - 1e-4)
         n_raw = torch.logit(n_clamped).clone().detach().requires_grad_(True)
         opt_params = [n_raw, h_raw]
     else:
@@ -49,7 +52,8 @@ def refine_topology(target_alpha, target_p, n_init, h_init, phys_engine, p_star_
                 h_phys, _ = torch.sort(h_phys, dim=1)
 
                 if not lock_n:
-                    n_phys = 1.0 + 2.0 * torch.sigmoid(n_raw)
+                    # FORWARD MAPPING: Dynamically scale the sigmoid output to the config bounds
+                    n_phys = gamma_min + (gamma_max - gamma_min) * torch.sigmoid(n_raw)
                 else:
                     n_phys = torch.full_like(n_init, 2.0, device=device) # Strictly Hertzian
 
@@ -83,7 +87,7 @@ def refine_topology(target_alpha, target_p, n_init, h_init, phys_engine, p_star_
         h_final, _ = torch.sort(h_final, dim=1)
 
         if not lock_n:
-            n_final = 1.0 + 2.0 * torch.sigmoid(n_raw)
+            n_final = gamma_min + (gamma_max - gamma_min) * torch.sigmoid(n_raw)
         else:
             n_final = torch.full_like(n_init, 2.0, device=device)
             

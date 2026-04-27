@@ -19,6 +19,9 @@ def main():
     device = torch.device(cfg['training']['device'] if torch.cuda.is_available() else "cpu")
     n_asperities = cfg['physics']['n_asperities']
     patience = cfg['training']['patience']
+    gamma_min = cfg['physics']['gamma_min']
+    gamma_max = cfg['physics']['gamma_max']
+
     
     early_stopping = EarlyStopping(patience=patience, verbose=True, delta=1e-5)
     mlflow.set_experiment(cfg['experiment_name'])
@@ -78,7 +81,8 @@ def main():
             w_shape=cfg['training']['loss_weights'].get('w_shape', 10.0),
             w_grad=cfg['training']['loss_weights'].get('w_grad', 1.0),
             w_mag=cfg['training']['loss_weights'].get('w_mag', 1.0),
-            max_delta=max_d
+            max_delta=max_d,
+            gamma_max=gamma_max,
         ).to(device)
 
         epochs = cfg['training']['epochs']
@@ -264,7 +268,8 @@ def main():
                         p_p_abs, p_a_abs, p_s_abs,  # Pred X, Y1, Y2
                         t_params, p_params, epoch,
                         t_p_max, t_a_max,           # Pass scalars for title/text
-                        p_p_max, p_a_max
+                        p_p_max, p_a_max,
+                        gamma_min, gamma_max        # Pass config bounds for reference lines
                     )
                     
                     mlflow.log_figure(fig, f"validation_plots/epoch_{epoch}.png")

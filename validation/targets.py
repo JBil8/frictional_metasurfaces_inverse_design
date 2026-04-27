@@ -13,21 +13,23 @@ class TargetGenerator:
         self.n_steps = cfg['data']['n_steps']
         self.max_d = cfg['physics']['max_delta_ratio'] * cfg['physics']['radius']
         self.R = cfg['physics']['radius']
-
+        self.gamma_max = cfg['physics']['gamma_max']
+        self.gamma_min = cfg['physics']['gamma_min']
+        
         self.t_w = torch.ones(1, self.n_asp).to(device) * 2.0 * self.R
         self.indentations = torch.linspace(0, self.max_d, self.n_steps).unsqueeze(0).to(device)
         
         h_wall = torch.zeros(1, self.n_asp).to(device)
-        n_wall = torch.ones(1, self.n_asp).to(device) * 3.0
+        gamma_wall = torch.ones(1, self.n_asp).to(device) * self.gamma_max
         w_wall = self.t_w.clone()
 
         # Added explicit k_steepness for hard boundaries
         with torch.no_grad():
-            self.p_max, self.alpha_max, self.s_max = self.phys(h_wall, n_wall, w_wall, self.indentations, k_steepness=1e5)
+            self.p_max, self.alpha_max, self.s_max = self.phys(h_wall, gamma_wall, w_wall, self.indentations, k_steepness=1e5)
 
-        n_cone = torch.ones(1, self.n_asp).to(device) * 1.0
+        gamma_low = torch.ones(1, self.n_asp).to(device) * self.gamma_min
         with torch.no_grad():
-            self.p_min, self.alpha_min, self.s_min = self.phys(h_wall, n_cone, w_wall, self.indentations, k_steepness=1e5)
+            self.p_min, self.alpha_min, self.s_min = self.phys(h_wall, gamma_low, w_wall, self.indentations, k_steepness=1e5)
 
         print("[TargetGenerator] Loading dataset for validation sampling...")
         data_path = cfg['data']['path']
@@ -179,7 +181,9 @@ class TargetGenerator:
         return t_p, t_alpha, t_s, "Synthetic Sigmoid Switch"
 
     def get_consistent_saturating(self):
-        n = torch.ones(1, self.n_asp).to(self.device) * 1.5
+        safe_gamma = self.gamma_min + (self.gamma_max - self.gamma_min) / 2.0
+        
+        n = torch.ones(1, self.n_asp).to(self.device) * safe_gamma
         h_vals = torch.rand(1, self.n_asp).to(self.device)
         h = h_vals * (0.25 * self.max_d)
         h, _ = torch.sort(h, dim=1)
@@ -188,10 +192,10 @@ class TargetGenerator:
         with torch.no_grad():
             target_pressure, target_alpha, target_stiff = self.phys(h, n, self.t_w, self.indentations, k_steepness=1e5)
 
-        return target_pressure, target_alpha, target_stiff, "Saturating (Bounded Flat Punches)"
+        return target_pressure, target_alpha, target_stiff, "Saturating (Mid-Range Exponents)"
 
     def get_consistent_bilinear(self):
-        n = torch.ones(1, self.n_asp).to(self.device) * 3.0
+        n = torch.ones(1, self.n_asp).to(self.device) * self.gamma_max
         
         half_n = self.n_asp // 2
         rest_n = self.n_asp - half_n

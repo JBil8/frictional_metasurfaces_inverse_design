@@ -15,7 +15,7 @@ def generate_surface(grid_res=1500):
     # Initialize the "floor"
     Z = np.full_like(X, -1.2)
 
-    ns = np.linspace(1.0, 3.0, 9)
+    ns = np.linspace(1.8, 4.0, 9)
 
     idx = 0
     for i in range(3):

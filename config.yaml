@@ -2,14 +2,16 @@ experiment_name: "Asperity_Inverse_Design_v5_P_Star"
 
 physics:
   n_asperities: 9              # CRITICAL: MUST be a perfect square (4, 9, 16)
-  max_delta_ratio: 0.1         # Elastic regime limit
+  max_delta_ratio: 0.02         # Elastic regime limit
   radius: 1.0                   # Dimensionless 
   E_star: 1.0                  # Dimensionless scaling enabled
+  gamma_min: 1.8               # Minimum shape exponent for asperity profiles
+  gamma_max: 4.0               # Maximum shape exponent for asperity profiles
 
 data:
   path: "data/dataset_asp_unitcell.pt"
   n_steps: 128
-  n_samples: 200000
+  n_samples: 100000
 
 model:
   hidden_dim: 512 #256

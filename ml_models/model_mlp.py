@@ -7,6 +7,8 @@ class SurfaceInverseModel(nn.Module):
         self.n_asp = config['physics']['n_asperities']
         self.max_delta = config['physics']['max_delta_ratio'] * config['physics']['radius']
         self.n_steps = config['data']['n_steps']
+        self.gamma_max = config['physics']['gamma_max']
+        self.gamma_min = config['physics']['gamma_min']
         
         # --- INPUT DIMENSION CALCULATION ---
         # array input (Batch, 2 channels, n_steps) -> alpha_hat, stiff_hat
@@ -57,7 +59,7 @@ class SurfaceInverseModel(nn.Module):
         raw_n = raw_out[:, :self.n_asp]
         raw_gaps = raw_out[:, self.n_asp:] 
 
-        pred_exponents = 1.0 + raw_n * 2.0 
+        pred_exponents = self.gamma_min + raw_n * (self.gamma_max - self.gamma_min) 
         
         scaled_gaps = raw_gaps * (2.0 * self.max_delta / (self.n_asp - 1))
         
