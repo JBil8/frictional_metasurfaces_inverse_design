@@ -1,82 +1,113 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import os
+from mpl_toolkits.mplot3d import Axes3D
 
-def plot_validation_results(npz_path="data/paper_validation_data.npz"):
-    if not os.path.exists(npz_path):
-        print(f"Error: Could not find {npz_path}")
-        return
+# --- Publication Formatting ---
+plt.rcParams.update({
+    'font.family': 'serif',
+    'font.size': 12,
+    'axes.titlesize': 14,
+    'axes.labelsize': 14,
+    'xtick.labelsize': 11,
+    'ytick.labelsize': 11,
+    'legend.fontsize': 11,
+})
 
-    data = np.load(npz_path, allow_pickle=True)
-    os.makedirs("plots", exist_ok=True)
+def plot_category_3_panel(sample_data, category_name, save_dir="plots"):
+    """Generates a 1x3 grid: P-alpha Curve | 3D Surface | 2D Pressure Heatmap."""
+    print(f"Generating 3-panel figure for: {category_name}...")
+    
+    fig = plt.figure(figsize=(8, 2.5))
+    
+    # --- Data Extraction ---
+    p_gt = sample_data["pressure_gt"].flatten()
+    a_gt = sample_data["alpha_gt"].flatten()
+    a_nn = sample_data["alpha_nn_opt_analytical"].flatten()
+    p_bem = sample_data["pressure_bem"]
+    a_bem = sample_data["alpha_bem"]
+    surface_bem = sample_data.get("surface_bem", None)
+    pressure_field = sample_data.get("pressure_field_bem", None)
+    L_bem = sample_data.get("L_bem", 1.0)
 
-    for key in data.keys():
-        sample_data = data[key].item()
+    # Clean NaNs
+    a_gt = np.where(a_gt == -1.0, np.nan, a_gt)
+    a_nn = np.where(a_nn == -1.0, np.nan, a_nn)
+
+    # --- PANEL 1: Macroscopic Curve ---
+    ax1 = fig.add_subplot(1, 3, 1)
+    C_GT, C_NN, C_BEM = '#333333', '#D55E00', '#0072B2'
+    
+    ax1.plot(p_gt, a_gt, color=C_GT, lw=3.5, label="Target")
+    ax1.plot(p_gt, a_nn, color=C_NN, linestyle='--', lw=2.5, label="NN + Opt")
+    
+    if p_bem is not None and len(p_bem) > 0:
+        valid = ~np.isnan(a_bem)
+        ax1.plot(p_bem[valid], a_bem[valid], marker='o', linestyle='none', 
+                 color=C_BEM, markersize=7, markeredgecolor='white', markeredgewidth=1.0,
+                 label="Tamaas BEM", zorder=5)
+
+    title_clean = category_name.replace('sample_', '').replace('_', ' ').title()
+    ax1.set_title(f"Contact Mechanics ({title_clean})", fontweight='bold')
+    ax1.set_xlabel('$P^*$')
+    ax1.set_ylabel(r'$\alpha$')
+    ax1.grid(True, linestyle='--', alpha=0.4)
+    ax1.spines['top'].set_visible(False)
+    ax1.spines['right'].set_visible(False)
+    ax1.ticklabel_format(axis='x', style='sci', scilimits=(0,0))
+    ax1.legend(loc='lower right', frameon=False)
+
+    # --- PANEL 2: 3D Surface ---
+    ax2 = fig.add_subplot(1, 3, 2, projection='3d')
+    if surface_bem is not None:
+        N_pixels = surface_bem.shape[0]
+        x = np.linspace(-L_bem/2, L_bem/2, N_pixels)
+        y = np.linspace(-L_bem/2, L_bem/2, N_pixels)
+        X, Y = np.meshgrid(x, y)
         
-        pressure_gt = sample_data["pressure_gt"]
-        alpha_gt = sample_data["alpha_gt"]
-        alpha_nn_analytical = sample_data["alpha_nn_opt_analytical"] 
-        pressure_bem = sample_data["pressure_bem"]
-        alpha_bem = sample_data["alpha_bem"]
+        surf = ax2.plot_surface(X, Y, surface_bem, cmap='Grays', 
+                                linewidth=0, antialiased=True, alpha=1.0, shade=True)
+        ax2.set_title("Neural Surrogate Topography", fontweight='bold')
+        ax2.set_axis_off()
+        ax2.view_init(elev=35, azim=45)
+        ax2.set_box_aspect((1, 1, 0.4))
+    else:
+        ax2.text(0.5, 0.5, 0.5, "Surface Data Missing", ha='center', va='center')
+        ax2.set_axis_off()
+
+    # --- PANEL 3: 2D Pressure Heatmap ---
+    ax3 = fig.add_subplot(1, 3, 3)
+    if pressure_field is not None:
+        im = ax3.imshow(pressure_field, cmap='magma', extent=[-L_bem/2, L_bem/2, -L_bem/2, L_bem/2], origin='lower')
+        ax3.set_title("Full-Field BEM Pressure ($P_{max}$)", fontweight='bold')
+        ax3.set_xlabel("x/R")
+        ax3.set_ylabel("y/R")
+        cbar = fig.colorbar(im, ax=ax3, shrink=0.75, pad=0.05)
+        cbar.set_label('$P/E^*$', rotation=270, labelpad=15)
         
-        # Extract the saved surface data
-        surface_bem = sample_data.get("surface_bem", None)
-        L_bem = sample_data.get("L_bem", 1.0)
+    else:
+        ax3.text(0.5, 0.5, "Pressure Field Data Missing", ha='center', va='center')
+        ax3.axis('off')
 
-        alpha_gt_clean = np.where(alpha_gt == -1.0, np.nan, alpha_gt)
-        alpha_nn_clean = np.where(alpha_nn_analytical == -1.0, np.nan, alpha_nn_analytical)
+    plt.tight_layout()
+    save_path = os.path.join(save_dir, f"tamaas_{category_name}.png")
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
 
-        # Create a 1x2 layout: 2D plot on the left, 3D on the right
-        fig = plt.figure(figsize=(8, 4))
-        ax1 = fig.add_subplot(1, 2, 1)
-
-        # --- LEFT: Mechanics Plot ---
-        ax1.plot(pressure_gt, alpha_gt_clean, 'k-', lw=4, label="Target (GT)", alpha=0.7)
-        ax1.plot(pressure_gt, alpha_nn_clean, 'b--', lw=2.5, label="NN Optimizer (Analytical)", alpha=0.9)
-        
-        if pressure_bem is not None and alpha_bem is not None:
-            valid = ~np.isnan(alpha_bem)
-            ax1.plot(pressure_bem[valid], alpha_bem[valid], 'ro', markersize=6, 
-                    label="Tamaas BEM (Validation)", markeredgecolor='k', zorder=5)
-
-        ax1.set_xlabel(r"$P^*$", fontsize=12)
-        ax1.set_ylabel(r"$\alpha = A/A_{tot}$", fontsize=12)
-        
-        max_p_val = np.nanmax(np.where(~np.isnan(alpha_gt_clean), pressure_gt, np.nan))
-        if not np.isnan(max_p_val):
-            ax1.set_xlim(0, max_p_val * 1.05)
-
-        ax1.legend(fontsize=11)
-        ax1.grid(True, alpha=0.3, linestyle='--')
-
-        # --- RIGHT: 3D Topography Plot ---
-        if surface_bem is not None:
-            ax2 = fig.add_subplot(1, 2, 2, projection='3d')
-            
-            # Generate the X, Y coordinates for the grid
-            N_pixels = surface_bem.shape[0]
-            x = np.linspace(0, L_bem, N_pixels)
-            y = np.linspace(0, L_bem, N_pixels)
-            X, Y = np.meshgrid(x, y, indexing='ij')
-
-            # Plot the surface
-            surf = ax2.plot_surface(X, Y, surface_bem, cmap='coolwarm', 
-                                    linewidth=0, antialiased=True, alpha=0.9)
-            
-            ax2.set_title(f"Predicted Surface", fontsize=14)
-            ax2.set_zlabel("Height", fontsize=10)
-            
-            # Add a color bar
-            fig.colorbar(surf, ax=ax2, shrink=0.5, aspect=10, pad=0.1)
-            
-            # Optional: Adjust the viewing angle for better presentation
-            ax2.view_init(elev=30, azim=45)
-
-        save_path = f"plots/tamaas_val_{key}.png"
-        plt.tight_layout()
-        plt.savefig(save_path, dpi=150)
-        print(f"Saved {save_path}")
-        plt.close(fig)
 
 if __name__ == "__main__":
-    plot_validation_results()
+    save_directory = "plots"
+    os.makedirs(save_directory, exist_ok=True)
+    npz_path = "data/paper_validation_data.npz"
+    
+    if os.path.exists(npz_path):
+        data = np.load(npz_path, allow_pickle=True)
+        
+        # Loop through every category saved in the dictionary
+        for key in data.keys():
+            sample_data = data[key].item()
+            plot_category_3_panel(sample_data, category_name=key, save_dir=save_directory)
+            
+        print("\nAll 3-panel figures successfully generated.")
+    else:
+        print(f"Error: {npz_path} not found.")

@@ -113,8 +113,8 @@ class TargetGenerator:
         """
         # Choose bounds that fit nicely within your model's normalization limits
         # Based on your previous plots, P* up to ~0.008 and alpha up to ~0.08 is reasonable.
-        max_p = 0.00041
-        max_alpha = 0.004
+        max_p = 0.0006
+        max_alpha = 0.002
         
         # 1. Define perfect linear arrays
         target_pressure = torch.linspace(0, max_p, self.n_steps).unsqueeze(0).to(self.device)
@@ -141,10 +141,10 @@ class TargetGenerator:
         target_alpha = torch.linspace(0, max_alpha, self.n_steps).unsqueeze(0).to(self.device)
         
         # 2. Calculate the parabolic constant 'c'
-        c = max_p / (max_alpha ** 0.5)
+        c = max_p / (max_alpha ** 2.0)
         
         # 3. Pressure is purely quadratic
-        target_pressure = c * (target_alpha ** 0.5)
+        target_pressure = c * (target_alpha ** 2.0)
         
         # 4. Stiffness is the exact analytical derivative of the pressure curve
         target_stiff = 2 * c * target_alpha

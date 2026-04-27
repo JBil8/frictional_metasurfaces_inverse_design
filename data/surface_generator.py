@@ -174,7 +174,7 @@ class SurfaceGenerator:
 
 if __name__ == "__main__":
     print("--- Starting Dataset Generation ---")
-    set_seed(42)
+    set_seed()
 
     config_path = os.path.join(os.path.dirname(__file__), "../config.yaml")
     cfg = load_config(config_path)

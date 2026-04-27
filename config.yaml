@@ -36,3 +36,4 @@ generation:
     bimodal: 0.16       # Teaches violent stiffness cliffs
     wall: 0.16          # 9-asperity simultaneous contact
     sparse: 0.16        # Sequential multi-step contacts
+  seed: 42

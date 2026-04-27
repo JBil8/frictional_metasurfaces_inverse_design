@@ -54,11 +54,6 @@ def create_surface_grid(offsets, ns, widths, L):
     return N_elements, surface
 
 def run_tamas_simulation(heights, ns, widths, target_pressures, L, E_star=1.0, tol=1e-11):
-    '''
-    Args:
-        target_pressures: Intensive nominal pressure steps.
-        L: The globally fixed domain size from the config/physics engine.
-    '''
     if tamaas is None:
         raise ImportError("Tamaas library not found.")
 
@@ -68,6 +63,7 @@ def run_tamas_simulation(heights, ns, widths, target_pressures, L, E_star=1.0, t
     solver = tamaas.PolonskyKeerRey(model, surface_topo, tol)
     
     alphas = []
+    final_pressure_field = None  
     print(f"  > Starting Tamaas BEM solve (Fixed Domain L={L:.4f})...")
     
     for pressure in target_pressures:
@@ -78,14 +74,15 @@ def run_tamas_simulation(heights, ns, widths, target_pressures, L, E_star=1.0, t
         try:
             solver.solve(pressure)
             
-            # Contact fraction (alpha) is just the ratio of touching pixels to total pixels
             contact_nodes = np.sum(model.traction > 0)
             total_nodes = N * N
             contact_fraction = contact_nodes / total_nodes
-            
             alphas.append(contact_fraction)
+            
+            final_pressure_field = np.copy(model.traction) 
+            
         except Exception as e:
             print(f"    ! Solver failed at pressure {pressure:.4e}: {e}")
             alphas.append(np.nan)
         
-    return np.array(alphas), surface_topo, L
+    return np.array(alphas), surface_topo, final_pressure_field, L

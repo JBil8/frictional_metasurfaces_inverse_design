@@ -75,9 +75,9 @@ def main():
 
         # Initialize the simplified loss function
         criterion = CurriculumIntensiveLoss(
-            w_shape=cfg['training']['loss_weights'].get('w_shape', 1.0),
-            w_grad=cfg['training']['loss_weights'].get('w_grad', 0.1),
-            w_mag=cfg['training']['loss_weights'].get('w_mag', 0.1),
+            w_shape=cfg['training']['loss_weights'].get('w_shape', 10.0),
+            w_grad=cfg['training']['loss_weights'].get('w_grad', 1.0),
+            w_mag=cfg['training']['loss_weights'].get('w_mag', 1.0),
             max_delta=max_d
         ).to(device)
 

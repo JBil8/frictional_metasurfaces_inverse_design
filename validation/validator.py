@@ -324,8 +324,116 @@ class UnifiedValidator:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, dpi=300, bbox_inches='tight', transparent=False)
 
+    def plot_test_set_reconstructions_grid(self, save_path="plots/dataset_nn_reconstructions.pdf"):
+        """
+        Generates a 2x3 grid showing one unseen test sample per category,
+        overlaying the Target physics curve with the zero-shot NN Prediction.
+        """
+        print("\n[Validator] Generating 6-Panel NN Reconstruction Grid...")
+        categorized_indices = self.get_test_set_indices_by_category()
+
+        # Setup 2x3 grid (better for landscape paper layouts)
+        fig, axs = plt.subplots(2, 3, figsize=(10, 6), sharex=True, sharey=True)
+        axs = axs.flatten()
+        
+        # Styling palette
+        C_GT = '#333333'  # Dark Charcoal for Target
+        C_NN = '#0072B2'  # Teal/Blue for NN Prediction
+        panel_labels = ['(a)', '(b)', '(c)', '(d)', '(e)', '(f)']
+
+        paper_names = {
+            "linear": "Linear Coulomb",
+            "bilinear": "Bilinear Transition",
+            "saturating": "Saturating Contact",
+            "bimodal": "Bimodal Distribution",
+            "sparse": "Sparse Engagement",
+            "lhs": "Latin Hypercube (LHS)",
+            "random_sum": "Complex Superposition",
+            "wall": "Rigid Step (Wall)",
+            "exiled": "Extreme Singularity"
+        }
+
+        for i, (category, indices) in enumerate(categorized_indices.items()):
+            if i >= 6: break # Safety limit for 6 subplots
+            
+            display_title = paper_names.get(category, category.replace("_", " ").title())
+
+            ax = axs[i]
+            if not indices:
+                ax.text(0.5, 0.5, f"No Test Data:\n{category}", ha='center', va='center')
+                continue
+
+            # 1. Pick random unseen sample
+            idx = np.random.choice(indices) + 1 
+            
+            # 2. Fetch Ground Truth
+            t_p, t_a, t_s, _, _, _ = self.gen.get_custom_sample(idx, category)
+            
+            # rename categories
+
+
+            # 3. Prepare Input and Run Model
+            x_arr, x_scal_log = self.prepare_nn_input(t_p, t_a, t_s)
+            with torch.no_grad():
+                n_pred, h_pred = self.model(x_arr, x_scal_log)
+                # Anchor heights to 0
+                h_anchored = torch.sort(h_pred, dim=1)[0] - torch.sort(h_pred, dim=1)[0][:, 0:1]
+                # Run through Sneddon physics engine
+                p_nn, a_nn, _ = self.phys(h_anchored, n_pred, self.gen.t_w, self.gen.indentations, k_steepness=1e5)
+
+            # 4. Convert to absolute numpy arrays
+            t_p_np = t_p[0].cpu().numpy()
+            t_a_np = t_a[0].cpu().numpy()
+            p_p_np = p_nn[0].cpu().numpy()
+            p_a_np = a_nn[0].cpu().numpy()
+
+            # 5. Plotting
+            ax.plot(t_p_np, t_a_np, color=C_GT, lw=3, label="Target" if i==0 else "")
+            ax.plot(p_p_np, p_a_np, color=C_NN, linestyle='--', lw=2.5, label="Prediction" if i==0 else "")
+            
+            # 6. Clean Formatting
+            ax.grid(True, linestyle='--', alpha=0.4, color='gray')
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            
+            ax.text(0.5, 0.15, display_title, 
+            transform=ax.transAxes, 
+            fontsize=14, 
+            fontweight='bold', 
+            ha='center', 
+            va='top',
+            # Optional: Add a subtle semi-transparent white box behind the text 
+            # so the grid or data lines don't make it hard to read.
+            bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=3))
+
+            ax.text(0.05, 0.90, panel_labels[i], transform=ax.transAxes, 
+                    fontsize=14, fontweight='bold', va='top')
+            
+            ax.ticklabel_format(axis='x', style='sci', scilimits=(0,0))
+            
+            # Dynamic Local Axis Scaling
+            max_p = max(t_p_np.max(), p_p_np.max())
+            max_a = max(t_a_np.max(), p_a_np.max())
+            # ax.set_xlim(0, max_p * 1.05)
+            # ax.set_ylim(0, max_a * 1.1)
+            
+            if i >= 3:
+                ax.set_xlabel('$P^*$', fontsize=13)
+            if i % 3 == 0:
+                ax.set_ylabel(r'$\alpha$', fontsize=13)
+
+        # Add global legend to the first panel
+        axs[0].legend(loc='right', frameon=False, fontsize=14)
+
+        plt.tight_layout()
+        plt.subplots_adjust(hspace=0.3, wspace=0.25) 
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, dpi=300, bbox_inches='tight', transparent=False)
+        print(f"  > Saved 6-panel grid to {save_path}")
+        plt.close()
+
     def plot_comparison(self, t_p, t_a, t_s, gt_n, gt_h, p_nn, a_nn, s_nn, n_nn, h_nn, title):
-        fig, axs = plt.subplots(2, 2, figsize=(16, 12))
+        fig, axs = plt.subplots(2, 2, figsize=(6, 6))
         C_GT, C_NN = '#333333', '#0072B2'
 
         def style_ax(ax):
@@ -345,13 +453,13 @@ class UnifiedValidator:
 
         axs[0, 0].plot(t_p_np, t_a_np, color=C_GT, lw=3, label="Target")
         axs[0, 0].plot(p_p_np, p_a_np, color=C_NN, linestyle='--', lw=2.5, label="Prediction")
-        axs[0, 0].set(title="Contact Area vs Load", xlabel="Nominal Pressure P*", ylabel="Contact Fraction α")
+        axs[0, 0].set(xlabel="$P^*$", ylabel=r"$\alpha$")
         style_ax(axs[0, 0]); axs[0, 0].legend()
 
         axs[1, 0].plot(t_p_np, t_s_np, color=C_GT, lw=3, label="Target")
         axs[1, 0].plot(p_p_np, p_s_np, color=C_NN, linestyle='--', lw=2.5, label="Prediction")
-        axs[1, 0].set(title="Topological Stiffness", xlabel="Nominal Pressure P*", ylabel="Stiffness S*")
-        style_ax(axs[1, 0]); axs[1, 0].legend()
+        axs[1, 0].set(xlabel="$P^*$", ylabel="$S^*$")
+        style_ax(axs[1, 0]) #; axs[1, 0].legend()
 
         idx = np.arange(h_nn.shape[1])
         s_idx_nn = torch.argsort(h_nn[0]).cpu().numpy()
@@ -366,10 +474,10 @@ class UnifiedValidator:
             plot_stem(axs[0, 1], idx, h_nn[0][s_idx_nn].detach().cpu().numpy(), C_NN, 's', 'Prediction')
             plot_stem(axs[1, 1], idx, n_nn[0][s_idx_nn].detach().cpu().numpy(), C_NN, 's', 'Prediction')
 
-        axs[0, 1].set(title="Predicted Heights", xlabel="Asperity Index", ylabel="Height h [m]")
-        axs[1, 1].set(title="Shape Exponent Distribution", xlabel="Asperity Index", ylabel="Exponent n [-]", ylim=(0.8, 3.2))
+        axs[0, 1].set(xlabel="Asperity Index", ylabel="$h/R$")
+        axs[1, 1].set(xlabel="Asperity Index", ylabel=r"Exponent $\gamma$", ylim=(0.8, 3.2))
         axs[0, 1].grid(True, alpha=0.15); axs[1, 1].grid(True, alpha=0.15)
-        axs[0, 1].legend(); axs[1, 1].legend()
+        # axs[0, 1].legend() ; axs[1, 1].legend()
 
         os.makedirs("plots", exist_ok=True)
         sname = title.split(":")[1].strip().split(" ")[0].lower() if ":" in title else title.split(" ")[0].lower()
@@ -442,18 +550,19 @@ class UnifiedValidator:
 
 if __name__ == "__main__":
     val = UnifiedValidator("config.yaml")
-    set_seed(42)
+    set_seed()
     
+    val.plot_test_set_reconstructions_grid()
     # Generate Figure 2 for the paper
     # val.plot_test_set_overview()
     
     # Optional baseline executions
-    # val.validate_on_test_set()
-    val.validate_designed(target_type="linear", refine=True)
-    val.validate_designed(target_type="saturate", refine=True)
-    val.validate_designed(target_type="bilinear", refine=True)
+    # val.validate_on_test_set(refine=False)
+    # val.validate_designed(target_type="linear", refine=True)
+    # val.validate_designed(target_type="saturate", refine=True)
+    # val.validate_designed(target_type="bilinear", refine=True)
     
-    val.validate_optimization_baseline(target_type="saturate")
-    val.validate_optimization_baseline(target_type="bilinear")
-    val.validate_optimization_baseline(target_type="linear")
-    val.validate_optimization_baseline(target_type="quadratic")
+    # val.validate_optimization_baseline(target_type="saturate")
+    # val.validate_optimization_baseline(target_type="bilinear")
+    # val.validate_optimization_baseline(target_type="linear")
+    # val.validate_optimization_baseline(target_type="quadratic")
