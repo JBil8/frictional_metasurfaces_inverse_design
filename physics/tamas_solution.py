@@ -27,8 +27,8 @@ def create_surface_grid(offsets, ns, widths, L):
     # Cell size is now strictly dictated by the global L
     cell_size = L / grid_size
     
-    # Keep resolution high for BEM accuracy (128 pixels per cell)
-    N_elements = int(128 * grid_size)
+    # Keep resolution high for BEM accuracy
+    N_elements = int(256 * grid_size)
 
     x = np.linspace(0, L, N_elements, endpoint=False)
     y = np.linspace(0, L, N_elements, endpoint=False)
@@ -59,6 +59,9 @@ def run_tamas_simulation(heights, ns, widths, target_pressures, L, E_star=1.0, t
 
     N, surface_topo = create_surface_grid(heights, ns, widths, L)
     
+    tamaas.set_log_level(tamaas.LogLevel.info)
+    tamaas.initialize(4)
+
     model = tamaas.Model(tamaas.model_type.basic_2d, [L, L], [N, N])
     solver = tamaas.PolonskyKeerRey(model, surface_topo, tol)
     

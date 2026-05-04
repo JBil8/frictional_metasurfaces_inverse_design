@@ -6,19 +6,19 @@ from mpl_toolkits.mplot3d import Axes3D
 # --- Publication Formatting ---
 plt.rcParams.update({
     'font.family': 'serif',
-    'font.size': 12,
-    'axes.titlesize': 14,
-    'axes.labelsize': 14,
-    'xtick.labelsize': 11,
-    'ytick.labelsize': 11,
-    'legend.fontsize': 11,
+    'font.size': 14,
+    'axes.titlesize': 17,
+    'axes.labelsize': 15,
+    'xtick.labelsize': 15,
+    'ytick.labelsize': 15,
+    'legend.fontsize': 15,
 })
 
 def plot_category_3_panel(sample_data, category_name, save_dir="plots"):
     """Generates a 1x3 grid: P-alpha Curve | 3D Surface | 2D Pressure Heatmap."""
     print(f"Generating 3-panel figure for: {category_name}...")
     
-    fig = plt.figure(figsize=(8, 2.5))
+    fig = plt.figure(figsize=(16, 5))
     
     # --- Data Extraction ---
     p_gt = sample_data["pressure_gt"].flatten()
@@ -36,7 +36,8 @@ def plot_category_3_panel(sample_data, category_name, save_dir="plots"):
 
     # --- PANEL 1: Macroscopic Curve ---
     ax1 = fig.add_subplot(1, 3, 1)
-    C_GT, C_NN, C_BEM = '#333333', '#D55E00', '#0072B2'
+    C_GT, C_NN, C_BEM = '#333333', '#0072B2', '#D55E00'
+
     
     ax1.plot(p_gt, a_gt, color=C_GT, lw=3.5, label="Target")
     ax1.plot(p_gt, a_nn, color=C_NN, linestyle='--', lw=2.5, label="NN + Opt")

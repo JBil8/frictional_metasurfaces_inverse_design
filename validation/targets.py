@@ -115,8 +115,8 @@ class TargetGenerator:
         """
         # Choose bounds that fit nicely within your model's normalization limits
         # Based on your previous plots, P* up to ~0.008 and alpha up to ~0.08 is reasonable.
-        max_p = 0.0006
-        max_alpha = 0.002
+        max_p = 0.0004
+        max_alpha = 0.01
         
         # 1. Define perfect linear arrays
         target_pressure = torch.linspace(0, max_p, self.n_steps).unsqueeze(0).to(self.device)
@@ -136,17 +136,17 @@ class TargetGenerator:
         Generates a mathematically perfect quadratic target (P* proportional to alpha^2).
         This provides a mathematically exact analytical baseline with a linearly increasing stiffness.
         """
-        max_p = 0.00041*10
+        max_p = 0.0004*10
         max_alpha = 0.0012*10
         
         # 1. Define the independent variable (alpha) linearly
         target_alpha = torch.linspace(0, max_alpha, self.n_steps).unsqueeze(0).to(self.device)
         
         # 2. Calculate the parabolic constant 'c'
-        c = max_p / (max_alpha ** 2.0)
+        c = max_p / (max_alpha ** 0.5)
         
         # 3. Pressure is purely quadratic
-        target_pressure = c * (target_alpha ** 2.0)
+        target_pressure = c * (target_alpha ** 0.5)
         
         # 4. Stiffness is the exact analytical derivative of the pressure curve
         target_stiff = 2 * c * target_alpha
@@ -195,13 +195,13 @@ class TargetGenerator:
         return target_pressure, target_alpha, target_stiff, "Saturating (Mid-Range Exponents)"
 
     def get_consistent_bilinear(self):
-        n = torch.ones(1, self.n_asp).to(self.device) * self.gamma_max
+        n = torch.ones(1, self.n_asp).to(self.device) * ( self.gamma_min + (self.gamma_max-self.gamma_min) / 2.0 ) 
         
         half_n = self.n_asp // 2
         rest_n = self.n_asp - half_n
         
         h1 = torch.zeros(1, half_n).to(self.device)
-        h2 = torch.ones(1, rest_n).to(self.device) * (0.8 * self.max_d)
+        h2 = torch.ones(1, rest_n).to(self.device) * (0.5 * self.max_d)
 
         h = torch.cat([h1, h2], dim=1)
 

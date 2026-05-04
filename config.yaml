@@ -24,6 +24,9 @@ training:
   patience: 100
   device: "cuda"
   loss_weights:
+    w_shape: 2.0               
+    w_mag: 4.0
+    w_grad: 1.0
     w_stiff: 2.0               # Weight for the dP/dAlpha topology & cliffs
     w_pressure: 4.0            # Weight for the Intensive Pressure anchor
   scheduler:

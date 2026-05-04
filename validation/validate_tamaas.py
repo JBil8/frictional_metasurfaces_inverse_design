@@ -145,7 +145,7 @@ def main():
         valid_pressures = target_p_np[valid_mask]
         
         if len(valid_pressures) > 0:
-            tamaas_pressure_steps = valid_pressures[::10] # Downsample to save time
+            tamaas_pressure_steps = valid_pressures[::5] # Downsample to save time
 
             try:
                 # Expecting the 4 updated variables from run_tamas_simulation

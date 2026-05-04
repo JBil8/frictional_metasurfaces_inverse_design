@@ -80,7 +80,7 @@ def main():
         criterion = CurriculumIntensiveLoss(
             w_shape=cfg['training']['loss_weights'].get('w_shape', 10.0),
             w_grad=cfg['training']['loss_weights'].get('w_grad', 1.0),
-            w_mag=cfg['training']['loss_weights'].get('w_mag', 1.0),
+            w_mag=cfg['training']['loss_weights'].get('w_mag', 10.0),
             max_delta=max_d,
             gamma_max=gamma_max,
         ).to(device)
