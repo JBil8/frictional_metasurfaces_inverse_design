@@ -15,7 +15,7 @@ data:
 
 model:
   hidden_dim: 512 #256
-  name: "model_best_unitcell_200k.pth"
+  name: "model_best_unitcell_100k_annealing.pth"
 
 training:
   batch_size: 512 #1024
@@ -24,8 +24,8 @@ training:
   patience: 100
   device: "cuda"
   loss_weights:
-    w_shape: 2.0               
-    w_mag: 4.0
+    w_shape: 10.0               
+    w_mag: 10.0
     w_grad: 1.0
     w_stiff: 2.0               # Weight for the dP/dAlpha topology & cliffs
     w_pressure: 4.0            # Weight for the Intensive Pressure anchor

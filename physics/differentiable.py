@@ -40,7 +40,7 @@ class AxisymmetricContactLayer(nn.Module):
         w = widths.unsqueeze(2)
         d = indentations.unsqueeze(1)
 
-        # 1. SOFTPLUS HOMOTOPY (Fixes the ghost gradient)
+        # 1. SOFTPLUS REGULARIZATION (Fixes the ghost gradient)
         # This naturally curves smoothly to 0 for negative deltas, avoiding the need for manual clamping logic
         smooth_delta = F.softplus(d - h, beta=k_steepness)
 

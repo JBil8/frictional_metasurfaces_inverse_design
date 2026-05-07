@@ -31,7 +31,7 @@ def plot_training_dynamics(metrics_dir="."):
     
     # 2. Setup the 2x2 Grid with a shared X-axis
     plt.rcParams.update({'font.family': 'sans-serif', 'font.size': 11})
-    fig, axs = plt.subplots(2, 2, figsize=(5, 4.5), sharex=True)
+    fig, axs = plt.subplots(2, 2, figsize=(6, 5.5), sharex=True)
     
     # --- Top Left: The Losses ---
     axs[0, 0].plot(ep_train, val_train, color='black', lw=2.5, label='Train Loss', linestyle='--')
@@ -67,6 +67,10 @@ def plot_training_dynamics(metrics_dir="."):
         ax.grid(True, linestyle='--', alpha=0.5)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
+
+    for i, ax in enumerate(axs.flat):
+            ax.text(-0.3, 1.0, f"({chr(97+i)})", transform=ax.transAxes, 
+                    fontsize=14, fontweight='bold', va='top', ha='right')
 
     plt.tight_layout()
     

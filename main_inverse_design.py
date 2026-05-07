@@ -107,25 +107,49 @@ def main():
             mlflow.log_metric("lambda_param", lambda_param, step=epoch)
 
             for bx_arr, bx_scal, by in train_loader:
+                
                 bx_arr = bx_arr.to(device)
                 bx_scal = bx_scal.to(device)
                 by = by.to(device)
                 
                 optimizer.zero_grad()
 
-                # Extract shape targets directly (no masks needed)
-                target_alpha_hat = bx_arr[:, 0, :]   
-                target_stiff_hat = bx_arr[:, 1, :]  
+                with torch.no_grad():
+                    # Split ground truth parameters into n and h
+                    half_idx = by.shape[1] // 2
+                    t_n = by[:, :half_idx]
+                    t_h = by[:, half_idx:]
+                    t_w = torch.ones_like(t_n) * 2.0 * cfg['physics']['radius']
+                    batch_ind = indentations.repeat(by.shape[0], 1)
+                    
+                    # Forward Sneddon Physics on Ground Truth using current annealed kappa
+                    t_P_nat, t_alpha_nat, t_S_nat = physics(t_h, t_n, t_w, batch_ind, k_steepness=current_k)
 
-                # Log transform scalars for numerical stability during forward pass
-                bx_scal_log = torch.log10(bx_scal + 1e-12)
+                    # Extract target scalars
+                    t_p_max = torch.clamp(t_P_nat[:, -1], min=1e-12)
+                    t_a_max = torch.clamp(t_alpha_nat[:, -1], min=1e-12)
+                    dynamic_bx_scal = torch.stack([t_p_max, t_a_max], dim=1)
 
-                # Forward Neural Network
-                p_n, p_h = model(bx_arr, bx_scal_log) 
-                p_w = torch.ones_like(p_n) * 2.0 * cfg['physics']['radius']
-                batch_ind = indentations.repeat(bx_arr.shape[0], 1)
+                    # Normalize target arrays
+                    t_P_hat = t_P_nat / t_p_max.unsqueeze(1)
+                    t_alpha_hat = t_alpha_nat / t_a_max.unsqueeze(1)
+                    t_S_hat = t_S_nat * (t_a_max / t_p_max).unsqueeze(1)
+
+                    # Interpolate targets to the standard grid
+                    dyn_targ_alpha_hat = batched_interp1d(p_hat_grid, t_P_hat, t_alpha_hat, pad_value=1.0)
+                    dyn_targ_stiff_hat = batched_interp1d(p_hat_grid, t_P_hat, t_S_hat, pad_value=0.0)
+                    
+                    # Package the dynamic inputs for the Neural Network
+                    dynamic_bx_arr = torch.stack([dyn_targ_alpha_hat, dyn_targ_stiff_hat], dim=1)
+                    dynamic_bx_scal_log = torch.log10(dynamic_bx_scal + 1e-12)
+
+                # --- STEP 2: NEURAL NETWORK FORWARD PASS ---
+                # Feed the dynamic (blurred) curve into the model
+                p_n, p_h = model(dynamic_bx_arr, dynamic_bx_scal_log) 
                 
-                # Forward Sneddon Physics (Native space)
+                p_w = torch.ones_like(p_n) * 2.0 * cfg['physics']['radius']
+                
+                # Forward Sneddon Physics on predictions using the exact same current_k
                 P_nat, alpha_nat, S_nat = physics(p_h, p_n, p_w, batch_ind, k_steepness=current_k)
 
                 # Extract predicted scalars
@@ -142,14 +166,15 @@ def main():
                 pred_alpha_interp = batched_interp1d(p_hat_grid, P_hat_pred, alpha_hat_pred, pad_value=1.0)
                 pred_S_interp = batched_interp1d(p_hat_grid, P_hat_pred, S_hat_pred, pad_value=0.0)
 
-                # Calculate rigorous split loss
+                # --- STEP 3: LOSS CALCULATION ---
+                # Compare the predictions against the dynamic targets
                 total_loss = criterion(
                     pred_alpha_hat=pred_alpha_interp, 
-                    target_alpha_hat=target_alpha_hat,
+                    target_alpha_hat=dyn_targ_alpha_hat, 
                     pred_stiff_hat=pred_S_interp,
-                    target_stiff_hat=target_stiff_hat,
+                    target_stiff_hat=dyn_targ_stiff_hat,  
                     pred_scalars=pred_scalars,
-                    target_scalars=bx_scal,
+                    target_scalars=dynamic_bx_scal,       
                     pred_params=torch.cat([p_n, p_h], dim=1),
                     target_params=by,
                     lambda_param=lambda_param  
@@ -249,8 +274,6 @@ def main():
                     t_s_abs = t_s_hat * (t_p_max / t_a_max)
 
                     # 4. Grab the absolute predicted arrays directly (no interpolation needed)
-                    # Because we will plot y vs x, it doesn't matter that the x-axes (P) 
-                    # differ slightly between target and prediction.
                     p_p_abs = rec_P[0].cpu().numpy()
                     p_a_abs = rec_alpha[0].cpu().numpy()
                     p_s_abs = rec_S[0].cpu().numpy()

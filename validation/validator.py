@@ -303,6 +303,11 @@ class UnifiedValidator:
         # Add a single legend to the first plot
         axs[0, 0].legend(loc="lower right", fontsize=12)
         
+        # --- Add Standard Publication Labels (a)-(f) ---
+        for i, ax in enumerate(axs.flat):
+            ax.text(0.03, 0.95, f"({chr(97+i)})", transform=ax.transAxes, 
+                    fontsize=14, fontweight='bold', va='top', ha='left')
+
         # h_pad reduces the vertical gap to visually group the shared axes closer together
         plt.tight_layout(h_pad=0.5) 
         os.makedirs("plots", exist_ok=True)
@@ -661,6 +666,11 @@ class UnifiedValidator:
         axs[0, 1].grid(True, alpha=0.15)
         axs[1, 1].grid(True, alpha=0.15)
 
+        # Add panel labels
+        for i, ax in enumerate(axs.flat):
+            ax.text(0.05, 0.95, f"({chr(97+i)})", transform=ax.transAxes, 
+                    fontsize=14, fontweight='bold', va='top', ha='left')
+            
         os.makedirs("plots", exist_ok=True)
         sname = title.split(":")[1].strip().split(" ")[0].lower() if ":" in title else title.split(" ")[0].lower()
         plt.tight_layout()
@@ -751,16 +761,15 @@ if __name__ == "__main__":
     set_seed()
 
     val.plot_test_set_reconstructions_grid()
-    # Generate Figure 2 for the paper
     # val.plot_test_set_overview()
 
     # Optional baseline executions
-    val.validate_on_test_set(refine=False)
-    # val.validate_designed(target_type="linear", refine=True)
-    # val.validate_designed(target_type="saturate", refine=True)
-    # val.validate_designed(target_type="bilinear", refine=True)
+    # val.validate_on_test_set(refine=False)
+    val.validate_designed(target_type="linear", refine=True)
+    val.validate_designed(target_type="saturate", refine=True)
+    val.validate_designed(target_type="bilinear", refine=True)
 
-    # val.generate_ms_hertz_summary(n_starts=50)
+    val.generate_ms_hertz_summary(n_starts=50)
 
     # val.validate_optimization_baseline(target_type="saturate")
     # val.validate_optimization_baseline(target_type="bilinear")

@@ -20,6 +20,18 @@ def plot_category_3_panel(sample_data, category_name, save_dir="plots"):
     
     fig = plt.figure(figsize=(16, 5))
     
+    paper_names = {
+            "linear": "Linear Coulomb",
+            "bilinear": "Bilinear Transition",
+            "saturating": "Saturating",
+            "bimodal": "Bimodal",
+            "sparse": "Stratified",
+            "lhs": "LHS",
+            "random_sum": "Mixed",
+            "wall": "Coplanar",
+            "exiled": "Truncated"
+    }
+
     # --- Data Extraction ---
     p_gt = sample_data["pressure_gt"].flatten()
     a_gt = sample_data["alpha_gt"].flatten()
@@ -29,6 +41,12 @@ def plot_category_3_panel(sample_data, category_name, save_dir="plots"):
     surface_bem = sample_data.get("surface_bem", None)
     pressure_field = sample_data.get("pressure_field_bem", None)
     L_bem = sample_data.get("L_bem", 1.0)
+
+    # save the surface topography as a npz file for later use
+    # if surface_bem is not None:
+    #     surface_save_path = os.path.join(save_dir, f"tamaas_surface_{category_name}.npz")
+    #     np.savez(surface_save_path, surface=surface_bem, L=L_bem)
+    #     print(f"  > Saved BEM surface topography to: {surface_save_path}")
 
     # Clean NaNs
     a_gt = np.where(a_gt == -1.0, np.nan, a_gt)
@@ -48,8 +66,9 @@ def plot_category_3_panel(sample_data, category_name, save_dir="plots"):
                  color=C_BEM, markersize=7, markeredgecolor='white', markeredgewidth=1.0,
                  label="Tamaas BEM", zorder=5)
 
-    title_clean = category_name.replace('sample_', '').replace('_', ' ').title()
-    ax1.set_title(f"Contact Mechanics ({title_clean})", fontweight='bold')
+    lookup_key = category_name.replace('sample_', '').lower()
+    title_clean = paper_names.get(lookup_key, lookup_key.replace('_', ' ').title())
+    ax1.set_title(f"Area-Load Evolution ({title_clean})", fontweight='bold', pad=15)
     ax1.set_xlabel('$P^*$')
     ax1.set_ylabel(r'$\alpha$')
     ax1.grid(True, linestyle='--', alpha=0.4)
@@ -65,12 +84,31 @@ def plot_category_3_panel(sample_data, category_name, save_dir="plots"):
         x = np.linspace(-L_bem/2, L_bem/2, N_pixels)
         y = np.linspace(-L_bem/2, L_bem/2, N_pixels)
         X, Y = np.meshgrid(x, y)
-        
+
         surf = ax2.plot_surface(X, Y, surface_bem, cmap='Grays', 
-                                linewidth=0, antialiased=True, alpha=1.0, shade=True)
-        ax2.set_title("Neural Surrogate Topography", fontweight='bold')
-        ax2.set_axis_off()
-        ax2.view_init(elev=35, azim=45)
+                                linewidth=0, antialiased=True, alpha=1.0, shade=True,
+                                rcount=100, ccount=100)
+        ax2.set_title("Neural Surrogate Topography", fontweight='bold', pad=15)
+        
+        # Add matching spatial limits and labels
+        ax2.set_xlim(-L_bem/2, L_bem/2)
+        ax2.set_ylim(-L_bem/2, L_bem/2)
+        ax2.set_xlabel("x/R", labelpad=10)
+        ax2.set_ylabel("y/R", labelpad=10)
+        # ax2.set_zlabel("z/R", labelpad=10)
+        ax2.set_zticks([])  # Hide z-axis ticks for cleaner look
+        
+        # Clean up the 3D axis panes for publication (removes the gray background walls)
+        ax2.xaxis.pane.fill = False
+        ax2.yaxis.pane.fill = False
+        ax2.zaxis.pane.fill = False
+        ax2.xaxis.pane.set_edgecolor('white')
+        ax2.yaxis.pane.set_edgecolor('white')
+        ax2.zaxis.pane.set_edgecolor('white')
+        
+        # Optional: reduce grid clutter
+        ax2.grid(alpha=0.3)
+        ax2.view_init(elev=35, azim=-75)
         ax2.set_box_aspect((1, 1, 0.4))
     else:
         ax2.text(0.5, 0.5, 0.5, "Surface Data Missing", ha='center', va='center')
@@ -79,8 +117,8 @@ def plot_category_3_panel(sample_data, category_name, save_dir="plots"):
     # --- PANEL 3: 2D Pressure Heatmap ---
     ax3 = fig.add_subplot(1, 3, 3)
     if pressure_field is not None:
-        im = ax3.imshow(pressure_field, cmap='magma', extent=[-L_bem/2, L_bem/2, -L_bem/2, L_bem/2], origin='lower')
-        ax3.set_title("Full-Field BEM Pressure ($P_{max}$)", fontweight='bold')
+        im = ax3.imshow(pressure_field, cmap='Purples', extent=[-L_bem/2, L_bem/2, -L_bem/2, L_bem/2], origin='lower')
+        ax3.set_title("Full-Field BEM Pressure ($P_{max}$)", fontweight='bold', pad=22)
         ax3.set_xlabel("x/R")
         ax3.set_ylabel("y/R")
         cbar = fig.colorbar(im, ax=ax3, shrink=0.75, pad=0.05)
@@ -89,6 +127,11 @@ def plot_category_3_panel(sample_data, category_name, save_dir="plots"):
     else:
         ax3.text(0.5, 0.5, "Pressure Field Data Missing", ha='center', va='center')
         ax3.axis('off')
+
+    # # Add subplot labels (a), (b), (c)
+    # for i, ax in enumerate([ax1, ax2, ax3]):
+    #         ax.text(-0.3, 1.0, f"({chr(97+i)})", transform=ax.transAxes, 
+    #                 fontsize=14, fontweight='bold', va='top', ha='right')
 
     plt.tight_layout()
     save_path = os.path.join(save_dir, f"tamaas_{category_name}.png")

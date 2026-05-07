@@ -181,11 +181,11 @@ class TargetGenerator:
         return t_p, t_alpha, t_s, "Synthetic Sigmoid Switch"
 
     def get_consistent_saturating(self):
-        safe_gamma = self.gamma_min + (self.gamma_max - self.gamma_min) / 2.0
-        
+        safe_gamma = self.gamma_min + (self.gamma_max - self.gamma_min) / 2.0 - 0.5
+
         n = torch.ones(1, self.n_asp).to(self.device) * safe_gamma
         h_vals = torch.rand(1, self.n_asp).to(self.device)
-        h = h_vals * (0.25 * self.max_d)
+        h = h_vals * (0.2 * self.max_d)
         h, _ = torch.sort(h, dim=1)
         h = h - h[:, 0:1]
 
@@ -201,7 +201,7 @@ class TargetGenerator:
         rest_n = self.n_asp - half_n
         
         h1 = torch.zeros(1, half_n).to(self.device)
-        h2 = torch.ones(1, rest_n).to(self.device) * (0.5 * self.max_d)
+        h2 = torch.ones(1, rest_n).to(self.device) * (0.6 * self.max_d)
 
         h = torch.cat([h1, h2], dim=1)
 
