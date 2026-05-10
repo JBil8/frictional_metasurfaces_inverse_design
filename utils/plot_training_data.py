@@ -34,7 +34,7 @@ def plot_training_dynamics(metrics_dir="."):
     fig, axs = plt.subplots(2, 2, figsize=(6, 5.5), sharex=True)
     
     # --- Top Left: The Losses ---
-    axs[0, 0].plot(ep_train, val_train, color='black', lw=2.5, label='Train Loss', linestyle='--')
+    axs[0, 0].plot(ep_train, val_train, color='black', lw=2.5, label='Train Loss', linestyle='-')
     axs[0, 0].plot(ep_val, val_val, color='black', lw=2.5, label='Val Loss', linestyle=':')
     # axs[0, 0].set_title("Reconstruction Loss", fontweight='bold')
     axs[0, 0].set_ylabel(r"$\mathcal{L}$")

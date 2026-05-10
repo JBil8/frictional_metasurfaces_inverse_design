@@ -120,7 +120,14 @@ class UnifiedValidator:
         # --- A: MLP Surrogate ---
         with torch.no_grad():
             n_cnn, h_cnn = self.model(x_arr, x_scal_log)
-        n_A, h_A, p_A, a_A, s_A = self._run_refinement(t_p, t_a, n_cnn, h_cnn)
+            n_A, h_A, p_A, a_A, s_A = self._run_refinement(t_p, t_a, n_cnn, h_cnn)
+
+        # compute directly without refinement for a pure surrogate baseline
+        # h_anchored = torch.sort(h_cnn, dim=1)[
+        #     0] - torch.sort(h_cnn, dim=1)[0][:, 0:1]
+        # p_A, a_A, s_A = self.phys(
+        #     h_anchored, n_cnn, self.gen.t_w, self.gen.indentations, k_steepness=1e5)
+        
 
         # --- B: Multi-Start General ---
         best_loss_B, best_n_B, best_h_B = float('inf'), None, None
@@ -275,7 +282,7 @@ class UnifiedValidator:
             # 2. Top Row: Area vs Load
             ax_a = axs[0, col]
             ax_a.plot(t_p, t_a, color=C_GT, lw=3, label="Target")
-            ax_a.plot(p_C, a_C, color=C_HERTZ, ls='-', lw=2, label="Hertz (n=2)", alpha=0.8)   
+            ax_a.plot(p_C, a_C, color=C_HERTZ, ls='-', lw=2, label="Hertz ($\\gamma=2$)", alpha=0.8)   
             ax_a.plot(p_B, a_B, color=C_GEN, ls='-', lw=2, label="Multistart", alpha=0.8)
             ax_a.plot(p_A, a_A, color=C_CNN, ls='-', lw=2, label="Surrogate", alpha=0.8)
             

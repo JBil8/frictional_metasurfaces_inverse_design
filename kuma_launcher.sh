@@ -4,7 +4,7 @@
 #SBATCH --error=logs/slurm_%j.err
 
 # --- Kuma Specifics ---
-#SBATCH --partition=l40s          
+#SBATCH --partition=mig24gb  #l40s          
 #SBATCH --gpus=1         
 #SBATCH --nodes=1
 #SBATCH --ntasks=1

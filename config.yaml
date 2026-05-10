@@ -21,7 +21,7 @@ training:
   batch_size: 512 #1024
   epochs: 500
   learning_rate: 0.001
-  patience: 100
+  patience: 50
   device: "cuda"
   loss_weights:
     w_shape: 10.0               
