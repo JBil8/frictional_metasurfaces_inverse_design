@@ -41,6 +41,7 @@ python main_inverse_design.py
 
 ## Project structure 
 
+```text
 ├── config.yaml                     # Global configuration
 ├── data/                           # Dataset generation
 │   ├── dataset_asp_unitcell.pt
@@ -71,6 +72,7 @@ python main_inverse_design.py
     ├── targets.py                  # Generates out-of-distribution targets
     ├── validate_tamaas.py          # Full pipeline: Zero-shot prediction -> L-BFGS -> Tamaas BEM solver
     └── validator.py                # Unified validation class to manage test subsets
+```
 
 ## Configuration (`config.yaml`)
 
@@ -82,3 +84,7 @@ Note: Changing these requires regenerating the dataset.
 data: Adjust `n_samples` and interpolation resolution (`n_steps`).
 
 training: Modify batch_size, learning rates, curriculum epochs (lambda), and contact regularization boundaries (kappa_start to kappa_end).
+
+### Acknowledgements 
+
+This project has received funding from the European Union’s Horizon 2020 research and innovation programme under the Marie Skłodowska-Curie grant agreement No 945363. J.G.S. and G.C. gratefully acknowledge financial support from the Swiss National Science Foundation, via Ambizione Grant PZ00P2_216341 ``Data-Driven Computational Friction''.
