@@ -1,75 +1,84 @@
 # Differentiable Physics for Surface Inverse Design
 
-This project implements a **Scientific Machine Learning (SciML)** pipeline to solve the inverse contact mechanics problem. It uses a **differentiable physics engine** and a Convolutional Neural Network (CNN) to recover microscopic surface topography (asperity heights and shapes) purely from macroscopic contact measurements (Load-Area curves).
+This project implements a **Scientific Machine Learning (SciML)** pipeline to solve the highly non-convex inverse contact mechanics problem. It combines a **fully differentiable physics engine** (Sneddon mechanics) with a Deep Neural Network surrogate and L-BFGS optimization to recover microscopic surface topographies (asperity heights and variable-shape exponents) purely from macroscopic contact measurements (Load-Area curves). 
+
+The resulting framework enables the automated design of scale-invariant tribological unit cells (metainterfaces) with programmable static contact area-load curves.
 
 ## Key Features
 
-* **Differentiable Physics Layer:** A custom PyTorch module (`AxisymmetricContactLayer`) that analytically computes contact response, allowing backpropagation through the physical laws.
-* **Hybrid Loss Function:** Trains on both parameter accuracy (MSE) and physical curve reconstruction (Log-Likelihood + Derivative/Stiffness matching).
-* **Feature Engineering:** Inputs include **Stiffness** (Load derivative) to explicitly guide the learning of curvature exponents.
-* **MLflow Integration:** Full experiment tracking, parameter logging, and real-time visualization of validation curves.
+* **Differentiable Physics Layer:** A custom PyTorch module (`AxisymmetricContactLayer`) that analytically computes multi-asperity contact response, allowing the backpropagation of exact physical gradients.
+* **Decoupled MLP Architecture:** Separates scale from shape. The network processes normalized Area/Stiffness arrays and logarithmic scale multipliers independently for highly robust zero-shot topological predictions.
+* **Curriculum & Contact Regularization:** Utilizes a contact regularization schedule (kappa) and supervised parameter anchoring (lambda)
 
 ## Installation
 
 1.  **Clone the repository** and navigate to the folder.
 2.  **Install dependencies** (Recommend using a virtual environment):
     ```bash
-    pip install torch numpy scipy pyyaml matplotlib mlflow
+    pip install -r requirements.txt
     ```
-    *(Note: If you are on a laptop without a GPU, install the CPU-only version of PyTorch to save space.)*
+    *(Note: For High-Performance Computing (HPC) environments, ensure OpenMP and MKL thread limits are configured for Tamaas).*
 
 ## Quick Start
 
-### 1. Generate Synthetic Data
-Run the physics-based generator to create the dataset. This uses Latin Hypercube Sampling (LHS) to ensure good coverage of the parameter space.
+### 1. Generate the Partitioned Dataset
+
+Run the physics-based generator to create the dataset. This generates mathematically challenging topological sub-domains (LHS, Bimodal, Stratified, Coplanar, Truncated, Mixed) to force the network to learn extreme stiffness transitions.
 
 ```bash
-# Must be run as a module to handle imports correctly
 python -m data.surface_generator
 ```
-- output: `data/dataset_<n_asperities>_sp.pt`
 
-### 2. train the Inverse Model
+Output: `data/dataset_9_asp.pt`
 
-Train the neural network. This script automatically handles data loading, training, validation, and testing
+### 2. Train the Inverse Model
 
 ```bash
 python main_inverse_design.py
 ```
 
-### 3. Monitor Results
+(You can monitor the loss curves with `mlfow ui`)
 
-Launch the MLflow dashboard to view loss curves and validation plots in real-time.
+## Project structure 
 
-```bash
-mlflow ui
-```
+├── config.yaml                     # Global configuration
+├── data/                           # Dataset generation
+│   ├── dataset_asp_unitcell.pt
+│   └── __init__.py
+├── kuma_launcher.sh                # Shell script for submitting jobs to the HPC cluster
+├── main_inverse_design.py          # training the neural surrogate
+├── ml_models/                      # Neural network architecture and objectives
+│   ├── __init__.py
+│   ├── loss.py                     # Custom loss functions
+│   └── model_mlp.py                # Deep MLP surrogate architecture
+├── physics/                        # Contact mechanics engines
+│   ├── analytical.py               # Standard analytical Sneddon solutions
+│   ├── differentiable.py           # PyTorch differentiable physics
+│   ├── __init__.py
+│   └── tamas_solution.py           # Tamaas BEM integration
+├── README.md                       # Project documentation
+├── requirements.txt                # dependencies
+├── utils/                          # Core helper functions
+│   ├── config.py                   # YAML configuration loader/parser
+│   ├── early_stopping.py           # Training logic to halt
+│   ├── __init__.py
+│   ├── interpolation.py            # Batched 1D interpolation
+│   ├── normalization.py            # Local scaling and normalization │   ├── optimizer.py                # Multi-stage L-BFGS topographic refinement
+│   └── seeding.py                  # Random seed enforcement 
+└── validation/                     # Testing, benchmarking, and plotting scripts
+    ├── evaluate_model_perf.py      # General test-set evaluation and error metrics
+    ├── __init__.py
+    ├── targets.py                  # Generates out-of-distribution targets
+    ├── validate_tamaas.py          # Full pipeline: Zero-shot prediction -> L-BFGS -> Tamaas BEM solver
+    └── validator.py                # Unified validation class to manage test subsets
 
-
-## Project Structure
-
-```plaintext
-├── config.yaml              # Global configuration (Physics, Data, Training)
-├── main_inverse_design.py   # Main training entry point
-├── data/
-│   ├── surface_generator.py # Generates Load/Area/Stiffness curves from Physics
-│   └── dataset_16_asp.pt    # Generated dataset (ignored by git)
-├── physics/
-│   └── differentiable.py    # The Differentiable Physics Engine (PyTorch Layer)
-├── ml_models/
-│   └── model_mlp.py         # CNN Encoder + MLP Decoder architecture
-└── utils/
-    └── plotting.py          # Visualization utilities
-```
-
-## Configuration 
+## Configuration (`config.yaml`)
 
 You can tweak the experiment settings in `config.yaml`:
 
-- `physics`: Change `n_asperities` or `E_star` (equivalent Young's Modulus).
+physics: Define the design space bounds (`n_asperities`, `E_star`, `gamma_min`, `gamma_max`, `delta_max`).
+Note: Changing these requires regenerating the dataset.
 
-    - Note: If you change physics parameters, you MUST regenerate the dataset.
+data: Adjust `n_samples` and interpolation resolution (`n_steps`).
 
-- `data`: Adjust `n_samples` (e.g., 50k for high accuracy) or `n_steps`, wich correpsonds to the indentation steps, to increase the resolution.
-
-- `training`: Modify `batch_size`, `learning_rate`, or `epochs`.
+training: Modify batch_size, learning rates, curriculum epochs (lambda), and contact regularization boundaries (kappa_start to kappa_end).

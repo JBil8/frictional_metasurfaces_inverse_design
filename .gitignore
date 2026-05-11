@@ -58,3 +58,4 @@ model_final.pth
 *.npz
 *.db
 *.diff
+plots*
